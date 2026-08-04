@@ -1,7 +1,7 @@
 // The nozzle: volumetric, uneven flow.
 
 import { PHASE_BALLISTIC } from './particles.js';
-import { derived } from './params.js';
+import { derived, CONFIG } from './params.js';
 
 const PI_6 = Math.PI / 6;
 
@@ -41,8 +41,11 @@ export class Nozzle {
 
   reset() {
     this.debt = 0;
+    this.clumpDebt = 0;
+    this.pendingClumpVol = 0;
     this.emittedVolume = 0;
     this.emittedCount = 0;
+    this.clumpCount = 0;
   }
 
   // Instantaneous rate multiplier. Choking is correlated in time -- the flow
@@ -90,57 +93,105 @@ export class Nozzle {
     const budget = rate * dt;
     if (budget <= 0) return 0;
 
-    this.debt += budget;
+    // Split the incoming volume between the two populations. Both jars use the
+    // same carry-the-remainder pattern, so the totals stay exact and the split
+    // is honoured over time even though a clump is thousands of grains' worth
+    // of sand and only becomes affordable every few seconds.
+    const clumpShare = budget * Math.min(Math.max(v.clumpFraction, 0), 1);
+    this.clumpDebt += clumpShare;
+    this.debt += budget - clumpShare;
     // Bound the backlog so a rate spike cannot queue up an unbounded burst.
     if (this.debt > budget * 4) this.debt = budget * 4;
 
-    const g = v.gravity;
-    const y0 = v.nozzleHeight;
-    const vy0 = -v.initialSpeed;
-    const clumpPack = Math.max(v.packingFraction, 0.05);
-    const clumpD = derived.clumpDiameter();
-    let consumed = 0;
+    const ctx = {
+      g: v.gravity,
+      y0: v.nozzleHeight,
+      vy0: -v.initialSpeed,
+      clumpPack: Math.max(v.packingFraction, 0.05),
+      clumpD: derived.clumpDiameter(),
+      budget,
+      dt,
+      consumed: 0,
+    };
     let spawned = 0;
 
+    // Clumps first, so a clump lands at the head of its frame's sand rather
+    // than trailing it.
+    //
+    // The pending draw is held rather than resampled each frame. Redrawing
+    // would bias the population small, because a smaller clump becomes
+    // affordable sooner and would win the race disproportionately often.
+    if (v.clumpFraction > 0) {
+      if (this.pendingClumpVol <= 0) this.pendingClumpVol = this._drawClumpVolume(v);
+      while (this.clumpDebt >= this.pendingClumpVol) {
+        const vol = this.pendingClumpVol;
+        if (!v.continuousPour && this.emittedVolume + vol > dropVolume) break;
+        if (!this._spawn(particles, v, ctx, vol, true)) break;
+        this.clumpDebt -= vol;
+        this.clumpCount++;
+        spawned++;
+        this.pendingClumpVol = this._drawClumpVolume(v);
+      }
+    }
+
+    // Leave headroom so pending clumps can still be placed once the store is
+    // otherwise full.
+    const grainLimit = v.clumpFraction > 0
+      ? particles.capacity - CONFIG.clumpReserveSlots
+      : particles.capacity;
+
     while (this.debt > 0) {
+      if (particles.count >= grainLimit) break;
       const d = this.sampleDiameter(v);
       const vol = PI_6 * d * d * d;
-
       if (!v.continuousPour && this.emittedVolume + vol > dropVolume) break;
-
-      const i = particles.alloc();
-      if (i < 0) break;  // store full; leave the debt for later
-
-      // Where in the frame this grain conceptually left the nozzle.
-      const frac = Math.min(consumed / budget, 1);
-      const delta = (1 - frac) * dt;
-
-      const [ox, oz] = this.rng.disc(v.apertureRadius);
-      particles.px[i] = ox;
-      particles.py[i] = y0 + vy0 * delta - 0.5 * g * delta * delta;
-      particles.pz[i] = oz;
-      particles.vx[i] = 0;
-      particles.vy[i] = vy0 - g * delta;
-      particles.vz[i] = 0;
-
-      const isAgg = d > clumpD;
-      particles.vol[i] = vol;
-      // A clump is porous, so its bulk radius exceeds the solid-equivalent
-      // sphere. That is also what makes its fragments fit inside it later.
-      particles.radius[i] = isAgg
-        ? 0.5 * d / Math.cbrt(clumpPack)
-        : 0.5 * d;
-      particles.isAgg[i] = isAgg ? 1 : 0;
-      particles.colorSeed[i] = this.rng.next() * 1000;
-      particles.restTimer[i] = 0;
-      particles.phase[i] = PHASE_BALLISTIC;
-
+      if (!this._spawn(particles, v, ctx, vol, d > ctx.clumpD)) break;
       this.debt -= vol;
-      consumed += vol;
-      this.emittedVolume += vol;
-      this.emittedCount++;
       spawned++;
     }
     return spawned;
+  }
+
+  // Clump diameters are log-normal around their own target size with their own
+  // spread, independent of the grain distribution.
+  _drawClumpVolume(v) {
+    const d = derived.clumpMetres() * Math.exp(v.clumpSorting * this.rng.gaussian());
+    return PI_6 * d * d * d;
+  }
+
+  // Places one body, backdated to where it would have fallen by frame end.
+  // Returns false when the store is full, leaving the debt for later.
+  _spawn(particles, v, ctx, vol, isAgg) {
+    const i = particles.alloc();
+    if (i < 0) return false;
+
+    // Where in the frame this body conceptually left the nozzle.
+    const frac = Math.min(ctx.consumed / ctx.budget, 1);
+    const delta = (1 - frac) * ctx.dt;
+
+    const [ox, oz] = this.rng.disc(v.apertureRadius);
+    particles.px[i] = ox;
+    particles.py[i] = ctx.y0 + ctx.vy0 * delta - 0.5 * ctx.g * delta * delta;
+    particles.pz[i] = oz;
+    particles.vx[i] = 0;
+    particles.vy[i] = ctx.vy0 - ctx.g * delta;
+    particles.vz[i] = 0;
+
+    // Solid-equivalent diameter; a clump is then drawn larger because it is
+    // porous, which is also what makes its fragments fit inside it later.
+    const dSolid = Math.cbrt(vol / PI_6);
+    particles.vol[i] = vol;
+    particles.radius[i] = isAgg
+      ? 0.5 * dSolid / Math.cbrt(ctx.clumpPack)
+      : 0.5 * dSolid;
+    particles.isAgg[i] = isAgg ? 1 : 0;
+    particles.colorSeed[i] = this.rng.next() * 1000;
+    particles.restTimer[i] = 0;
+    particles.phase[i] = PHASE_BALLISTIC;
+
+    ctx.consumed += vol;
+    this.emittedVolume += vol;
+    this.emittedCount++;
+    return true;
   }
 }

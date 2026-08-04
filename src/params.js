@@ -33,6 +33,13 @@ export const CONFIG = {
 
   grainCapacity: 200000,
 
+  // Slots ordinary grains may not take, so a rare large body is never starved
+  // out by common small ones. Without this the store fills with sand long
+  // before the clump jar can afford its first clump, and no clump ever appears
+  // -- clumps are thousands of grains' worth of volume, so they accrue slowly
+  // while grains are spending the budget continuously.
+  clumpReserveSlots: 64,
+
   substepHz: 240,
   maxSubstepsPerFrame: 8,
   frameBudgetMs: 12,
@@ -95,8 +102,34 @@ export const values = {
   // sieve analysis reports and what a person can actually picture.
   sorting: Math.log(2) / 2,
   // Multiples of the median, so they keep their meaning when grain size moves.
-  clumpThreshold: 2.55,
+  // Set high enough that the grain tail almost never crosses it: now that
+  // clumps have their own population, a grain-tail lump is an accidental
+  // stray rather than the intended mechanism, and at 2.55x it produced ~700
+  // stray pebbles per fill competing with the clumps you actually want.
+  clumpThreshold: 3.5,
   maxGrainRatio: 12,
+  // --- Clumps ---
+  // Clumps get their own population rather than being drawn from the tail of
+  // the grain distribution. That earlier design bundled two claims: that a
+  // clump is one rigid body rather than a cluster of stuck-together grains, and
+  // that its size comes from the same distribution. All the benefit -- implicit
+  // intra-clump contacts, no burst-spawn mechanism -- comes from the first,
+  // which is untouched here. Only the sampling changes.
+  //
+  // It had to change because the two are a bimodal request and a log-normal has
+  // one hump: reaching a lump of a few thousand grains out in the tail means
+  // widening the whole distribution, which drags every ordinary grain with it.
+  // Measured, that route gave 1.4 usable clumps per fill alongside 1387
+  // mid-sized lumps and sand that no longer looked sorted.
+  //
+  // Fraction of poured volume that arrives as clumps. Frequency falls out of
+  // this and the clump size, which is more intuitive than setting a rate.
+  clumpFraction: 0.01,
+  // Diameter as a multiple of the median grain, so it keeps its meaning as
+  // grain size moves. Shown in mm, which updates with the median.
+  clumpSize: 17.1,
+  clumpSorting: Math.log(1.5) / 2,
+
   // Impact speed at which a median clump breaks. Replaces a raw cohesion gain,
   // which had no physical unit at all -- the model carries no mass or density,
   // so "cohesion" was an abstract number nobody could calibrate against
@@ -155,6 +188,34 @@ export const derived = {
   activeLayerMetres() {
     return values.activeLayerDepth * values.medianDiameter;
   },
+  grainVolume() {
+    const d = values.medianDiameter;
+    return (Math.PI / 6) * d * d * d;
+  },
+  clumpMetres() {
+    return values.clumpSize * values.medianDiameter;
+  },
+  clumpVolume() {
+    const d = derived.clumpMetres();
+    return (Math.PI / 6) * d * d * d;
+  },
+  // How many median grains' worth of sand is in one clump. Cubic, so a 17x
+  // diameter is 5000x the sand -- the relationship people consistently
+  // underestimate.
+  clumpGrains() {
+    return derived.clumpVolume() / derived.grainVolume();
+  },
+  // Mean, not median, clump volume. Sizes are log-normal, so the mean sits
+  // above the median by exp(4.5*sigma^2) -- the cube in the volume amplifies
+  // the spread. Dividing the volume budget by the median instead would
+  // overstate the clump rate by 20% at the default spread.
+  meanClumpVolume() {
+    const s = values.clumpSorting;
+    return derived.clumpVolume() * Math.exp(4.5 * s * s);
+  },
+  clumpsPerSecond() {
+    return (values.clumpFraction * values.flowRate) / derived.meanClumpVolume();
+  },
   dropVolume() {
     return values.dropMass / SAND_PARTICLE_DENSITY;
   },
@@ -194,7 +255,24 @@ export const SCHEMA = [
   },
   { key: 'clumpThreshold', group: 'Grain', label: 'Clump threshold', units: [{ unit: '× median', scale: 1 }], min: 1.3, max: 5, log: true },
   { key: 'maxGrainRatio', group: 'Grain', label: 'Max diameter', units: [{ unit: '× median', scale: 1 }], min: 3, max: 48, log: true },
-  { key: 'shatterSpeed', group: 'Grain', label: 'Shatter speed', units: [{ unit: 'm/s', scale: 1 }], min: 0.15, max: 15, log: true, logZero: true },
+
+  { key: 'clumpFraction', group: 'Clumps', label: 'Sand arriving as clumps', units: [{ unit: '%', scale: 100 }], min: 0.05, max: 10, log: true, logZero: true },
+  // Stored as a multiple of the median so the slider range is scale-free, but
+  // displayed in mm, which is what you can actually picture. `dynamic` exists
+  // because that conversion depends on another parameter, so it cannot be a
+  // fixed scale factor. Bounds are in stored units (scale 1).
+  {
+    key: 'clumpSize', group: 'Clumps', label: 'Clump size',
+    units: [{ unit: 'mm', scale: 1 }], min: 4, max: 64, log: true,
+    dynamic: (mult) => ({ value: mult * values.medianDiameter * 1000, unit: 'mm' }),
+  },
+  {
+    key: 'clumpSorting', group: 'Clumps', label: 'Clump size spread',
+    units: [{ unit: '×', scale: 1 }], min: 1.05, max: 3,
+    toDisplay: (s) => Math.exp(2 * s),
+    fromDisplay: (r) => Math.log(Math.max(r, 1.0001)) / 2,
+  },
+  { key: 'shatterSpeed', group: 'Clumps', label: 'Shatter speed', units: [{ unit: 'm/s', scale: 1 }], min: 0.15, max: 15, log: true, logZero: true },
 
   { key: 'turbAmplitude', group: 'Air', label: 'Turbulence', units: [{ unit: 'm/s', scale: 1 }], min: 0.01, max: 9, log: true, logZero: true },
   { key: 'eddySize', group: 'Air', label: 'Eddy size', units: [{ unit: 'cm', scale: 100 }], min: 0.5, max: 800, log: true },

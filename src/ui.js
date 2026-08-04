@@ -97,8 +97,16 @@ export function buildPanel(container, schema, vals, onChange) {
 
         const paint = () => {
           const ui = unitIndex.get(s.key);
-          out.textContent = format(toDisplay(s, vals[s.key], ui));
-          unit.textContent = s.units[ui].unit;
+          if (s.dynamic) {
+            // Display depends on another parameter, so it is recomputed rather
+            // than being a fixed scale on the stored value.
+            const d = s.dynamic(vals[s.key]);
+            out.textContent = format(d.value);
+            unit.textContent = d.unit;
+          } else {
+            out.textContent = format(toDisplay(s, vals[s.key], ui));
+            unit.textContent = s.units[ui].unit;
+          }
           unit.title = s.units.length > 1 ? 'click to change units' : '';
           input.value = toSlider(s, vals[s.key]);
         };
@@ -145,17 +153,29 @@ export function buildPanel(container, schema, vals, onChange) {
   }
 
   function paintDerived() {
-    const d = values.medianDiameter;
-    const grainVol = (Math.PI / 6) * d * d * d;
-    const zc = Math.log(values.clumpThreshold) / values.sorting;
-    const clumpPct = 50 * erfc(zc / Math.SQRT2);
-    const perKg = 1 / (grainVol * SAND_PARTICLE_DENSITY);
-    const bucketGrains = perKg * values.dropMass;
+    const grainVol = derived.grainVolume();
+    const bucketGrains = values.dropMass / (grainVol * SAND_PARTICLE_DENSITY);
     const pourSeconds = derived.dropVolume() / Math.max(values.flowRate, 1e-12);
+
+    // Clumps from the dedicated population.
+    const perSec = derived.clumpsPerSecond();
+    const clumpMass = derived.clumpVolume() * SAND_PARTICLE_DENSITY * 1000;
+    const rate = values.clumpFraction <= 0 || perSec <= 0
+      ? 'off'
+      : perSec >= 1 ? `${perSec.toFixed(1)}/s` : `one every ${(1 / perSec).toFixed(1)} s`;
+
+    // Oversized ordinary grains also count as aggregates. Worth surfacing
+    // separately: it is easy to widen sorting for its own sake and end up with
+    // a stream full of accidental lumps.
+    const zc = Math.log(values.clumpThreshold) / values.sorting;
+    const strayPct = 50 * erfc(zc / Math.SQRT2);
+
     dpre.textContent = [
-      `clumps      ${clumpPct < 0.005 ? 'never' : clumpPct.toFixed(2) + '% of grains'}`,
-      `clump size  ${format(derived.clumpDiameter() * 1000)} mm and up`,
-      `bucket      ${(bucketGrains / 1e6).toFixed(1)}M grains, pours in ${format(pourSeconds)} s`,
+      `clump      ${format(derived.clumpMetres() * 1000)} mm, ${format(clumpMass)} g`,
+      `           ${format(derived.clumpGrains())} grains of sand each`,
+      `rate       ${rate}`,
+      `stray lumps ${strayPct < 0.005 ? 'none' : strayPct.toFixed(2) + '% of grains'}`,
+      `bucket     ${(bucketGrains / 1e6).toFixed(1)}M grains, pours in ${format(pourSeconds)} s`,
       `active layer ${format(derived.activeLayerMetres() * 1000)} mm`,
       `static angle ${derived.staticAngle().toFixed(1)}°`,
     ].join('\n');
