@@ -115,21 +115,63 @@ const POT_DRIFT = [0.37, 0.11, 0.92, 0.88, 0.31, -0.35, -0.29, 0.94, 0.18];
  * compression the curl formulation exists to avoid.
  */
 export class CurlField {
-  constructor(noise, res, min, size) {
-    if (res < 2) throw new Error('CurlField needs res >= 2');
+  constructor(noise, nodeBudget, maxRes) {
     this.noise = noise;
-    this.res = res;
-    this.min = Float64Array.from(min);
-    this.size = Float64Array.from(size);
-    this.h = new Float64Array([size[0] / res, size[1] / res, size[2] / res]);
-
-    this.curl = new Float32Array(res * res * res * 3);
-    // Potential is sampled on a grid extended by one cell on every side, so
-    // every interior cell has neighbours to difference against.
-    const n = res + 2;
-    this.n = n;
-    this._pot = new Float32Array(n * n * n * 3);
+    this.nodeBudget = nodeBudget;
+    this.maxRes = maxRes;
+    this.min = new Float64Array(3);
+    this.size = new Float64Array(3);
+    this.h = new Float64Array(3);
+    this.res = new Int32Array([2, 2, 2]);
+    this.curl = null;
+    this._pot = null;
     this.builtAt = -Infinity;
+  }
+
+  /**
+   * Point the field at a region of world space.
+   *
+   * Resolution is allocated per axis in proportion to extent rather than as a
+   * fixed cube, so cells stay roughly isotropic. That matters here because the
+   * region is 58 cm wide but its height follows the pour-height slider across
+   * nearly three orders of magnitude; a cubic grid would be either wastefully
+   * fine horizontally or uselessly coarse vertically depending on which end you
+   * tuned it for.
+   *
+   * Cheap when the bounds have not meaningfully changed, so callers can invoke
+   * it every frame.
+   */
+  setBounds(min, size) {
+    const changed =
+      Math.abs(size[1] - this.size[1]) > this.size[1] * 0.02 ||
+      this.size[0] !== size[0] || this.size[2] !== size[2] || this.curl === null;
+    if (!changed) return false;
+
+    for (let i = 0; i < 3; i++) {
+      this.min[i] = min[i];
+      this.size[i] = size[i];
+    }
+
+    // Pick per-axis counts proportional to extent, normalised to the node
+    // budget, then clamp. Recompute the budget-fill after clamping so a very
+    // elongated region does not silently lose resolution on its short axes.
+    const vol = size[0] * size[1] * size[2];
+    let scale = Math.cbrt(this.nodeBudget / Math.max(vol, 1e-12));
+    for (let pass = 0; pass < 2; pass++) {
+      for (let i = 0; i < 3; i++) {
+        this.res[i] = Math.max(2, Math.min(this.maxRes, Math.round(size[i] * scale)));
+      }
+      const used = this.res[0] * this.res[1] * this.res[2];
+      if (used >= this.nodeBudget * 0.5) break;
+      scale *= Math.cbrt(this.nodeBudget / Math.max(used, 1));
+    }
+
+    const [rx, ry, rz] = this.res;
+    for (let i = 0; i < 3; i++) this.h[i] = size[i] / this.res[i];
+    this.curl = new Float32Array(rx * ry * rz * 3);
+    this._pot = new Float32Array((rx + 2) * (ry + 2) * (rz + 2) * 3);
+    this.builtAt = -Infinity;
+    return true;
   }
 
   _potential(comp, x, y, z, t) {
@@ -147,20 +189,22 @@ export class CurlField {
    * slider moves, leaving `amplitude` at the call site to mean what it says.
    */
   rebuild(t, lengthScale) {
-    const R = this.res, n = this.n, P = this._pot;
+    const [rx, ry, rz] = this.res;
+    const nx = rx + 2, ny = ry + 2, nz = rz + 2;
+    const P = this._pot;
     const invL = 1 / lengthScale;
     const [minX, minY, minZ] = this.min;
     const [hx, hy, hz] = this.h;
 
     // Potential at every node, including the halo. Node i maps to cell i-1, so
     // its centre sits at min + (i - 0.5) * h.
-    for (let i = 0; i < n; i++) {
+    for (let i = 0; i < nx; i++) {
       const wx = (minX + (i - 0.5) * hx) * invL;
-      for (let j = 0; j < n; j++) {
+      for (let j = 0; j < ny; j++) {
         const wy = (minY + (j - 0.5) * hy) * invL;
-        for (let k = 0; k < n; k++) {
+        for (let k = 0; k < nz; k++) {
           const wz = (minZ + (k - 0.5) * hz) * invL;
-          const o = ((i * n + j) * n + k) * 3;
+          const o = ((i * ny + j) * nz + k) * 3;
           P[o] = this._potential(0, wx, wy, wz, t);
           P[o + 1] = this._potential(1, wx, wy, wz, t);
           P[o + 2] = this._potential(2, wx, wy, wz, t);
@@ -173,21 +217,21 @@ export class CurlField {
     const sx = lengthScale / (2 * hx);
     const sy = lengthScale / (2 * hy);
     const sz = lengthScale / (2 * hz);
-    const strideI = n * n * 3, strideJ = n * 3, strideK = 3;
-    for (let a = 0; a < R; a++) {
+    const pI = ny * nz * 3, pJ = nz * 3, pK = 3;
+    const cI = ry * rz * 3, cJ = rz * 3;
+    for (let a = 0; a < rx; a++) {
       const i = a + 1;
-      for (let b = 0; b < R; b++) {
+      for (let b = 0; b < ry; b++) {
         const j = b + 1;
-        for (let c = 0; c < R; c++) {
-          const k = c + 1;
-          const o = ((i * n + j) * n + k) * 3;
-          const dP3dy = (P[o + strideJ + 2] - P[o - strideJ + 2]) * sy;
-          const dP2dz = (P[o + strideK + 1] - P[o - strideK + 1]) * sz;
-          const dP1dz = (P[o + strideK] - P[o - strideK]) * sz;
-          const dP3dx = (P[o + strideI + 2] - P[o - strideI + 2]) * sx;
-          const dP2dx = (P[o + strideI + 1] - P[o - strideI + 1]) * sx;
-          const dP1dy = (P[o + strideJ] - P[o - strideJ]) * sy;
-          const q = ((a * R + b) * R + c) * 3;
+        for (let c = 0; c < rz; c++) {
+          const o = ((i * ny + j) * nz + (c + 1)) * 3;
+          const dP3dy = (P[o + pJ + 2] - P[o - pJ + 2]) * sy;
+          const dP2dz = (P[o + pK + 1] - P[o - pK + 1]) * sz;
+          const dP1dz = (P[o + pK] - P[o - pK]) * sz;
+          const dP3dx = (P[o + pI + 2] - P[o - pI + 2]) * sx;
+          const dP2dx = (P[o + pI + 1] - P[o - pI + 1]) * sx;
+          const dP1dy = (P[o + pJ] - P[o - pJ]) * sy;
+          const q = a * cI + b * cJ + c * 3;
           C[q] = dP3dy - dP2dz;
           C[q + 1] = dP1dz - dP3dx;
           C[q + 2] = dP2dx - dP1dy;
@@ -201,19 +245,20 @@ export class CurlField {
   // border rather than wrapping, so grains outside the field just see its edge
   // value instead of teleporting to the far side of the turbulence.
   sample(x, y, z, out) {
-    const R = this.res, C = this.curl;
+    const C = this.curl;
+    const rx = this.res[0], ry = this.res[1], rz = this.res[2];
     let fx = (x - this.min[0]) / this.h[0] - 0.5;
     let fy = (y - this.min[1]) / this.h[1] - 0.5;
     let fz = (z - this.min[2]) / this.h[2] - 0.5;
-    if (!(fx > 0)) fx = 0; else if (fx > R - 1) fx = R - 1;
-    if (!(fy > 0)) fy = 0; else if (fy > R - 1) fy = R - 1;
-    if (!(fz > 0)) fz = 0; else if (fz > R - 1) fz = R - 1;
+    if (!(fx > 0)) fx = 0; else if (fx > rx - 1) fx = rx - 1;
+    if (!(fy > 0)) fy = 0; else if (fy > ry - 1) fy = ry - 1;
+    if (!(fz > 0)) fz = 0; else if (fz > rz - 1) fz = rz - 1;
 
-    const a0 = Math.min(fx | 0, R - 2), b0 = Math.min(fy | 0, R - 2), c0 = Math.min(fz | 0, R - 2);
+    const a0 = Math.min(fx | 0, rx - 2), b0 = Math.min(fy | 0, ry - 2), c0 = Math.min(fz | 0, rz - 2);
     const tx = fx - a0, ty = fy - b0, tz = fz - c0;
 
-    const sI = R * R * 3, sJ = R * 3, sK = 3;
-    const base = ((a0 * R + b0) * R + c0) * 3;
+    const sI = ry * rz * 3, sJ = rz * 3, sK = 3;
+    const base = a0 * sI + b0 * sJ + c0 * 3;
 
     for (let d = 0; d < 3; d++) {
       const o = base + d;

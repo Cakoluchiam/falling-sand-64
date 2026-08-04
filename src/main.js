@@ -1,6 +1,6 @@
 // Bootstrap and the frame loop.
 
-import { CONFIG, values, SCHEMA, domainBounds, enforceConstraints } from './params.js';
+import { CONFIG, values, derived, SCHEMA, domainBounds, enforceConstraints, SAND_PARTICLE_DENSITY } from './params.js';
 import { Rng } from './rng.js';
 import { Noise, CurlField } from './noise.js';
 import { Particles, PHASE_RESTING, SHARED_MEMORY_AVAILABLE } from './particles.js';
@@ -27,10 +27,16 @@ class App {
     gl.enable(gl.DEPTH_TEST);
     gl.clearColor(0.09, 0.10, 0.12, 1);
 
+    const span = Math.max(CONFIG.domainWidth, CONFIG.domainDepth);
     this.camera = new OrbitCamera(canvas, {
-      distance: Math.max(CONFIG.domainWidth, CONFIG.domainDepth) * 0.55,
-      target: [0, 1.2, 0],
-      far: Math.max(CONFIG.domainWidth, CONFIG.domainDepth) * 6,
+      distance: span * 0.6,
+      target: [0, span * 0.08, 0],
+      sceneSpan: span,
+      // The scene is centimetres across and a grain is a millimetre, so zoom
+      // has to reach close enough to inspect one -- about 5 mm out -- while
+      // still pulling back far enough to frame a 12.5 m pour.
+      minDistance: span * 0.008,
+      maxDistance: span * 40,
     });
 
     this.particles = new Particles(CONFIG.grainCapacity);
@@ -38,14 +44,14 @@ class App {
 
     this.rng = new Rng(values.seed);
     this.noise = new Noise(values.seed);
-    const { min, size } = domainBounds();
-    this.curl = new CurlField(this.noise, CONFIG.turbGridRes, min, size);
-    this.nozzle = new Nozzle(this.rng, this.noise, CONFIG.gravity);
+    this.curl = new CurlField(this.noise, CONFIG.turbNodeBudget, CONFIG.turbMaxRes);
+    this.nozzle = new Nozzle(this.rng, this.noise);
 
     this._tmp = new Float64Array(3);
     this.paused = false;
     this.stepOnce = false;
     this.lastSubsteps = 0;
+    this.restarts = 0;
     this.reset();
 
     this.frameTimes = [];
@@ -63,6 +69,7 @@ class App {
     this.accumulator = 0;
     this.lostVolume = 0;
     this.frameIndex = 0;
+    this.idleSeconds = 0;
     this.curl.builtAt = -Infinity;
   }
 
@@ -72,9 +79,22 @@ class App {
   // goes inside it.
   substep(_h) {}
 
-  simulate(dt) {
+  // Nothing left to watch: everything has landed and no more sand can come out,
+  // either because the store is full or the pour has finished.
+  isSettled() {
+    if (values.flowRate <= 0) return false;   // an empty nozzle is not a finished run
+    const P = this.particles;
+    for (let k = 0; k < P.count; k++) {
+      if (P.phase[P.live[k]] !== PHASE_RESTING) return false;
+    }
+    const storeFull = P.count >= P.capacity;
+    const pourDone = !values.continuousPour && this.nozzle.emittedVolume >= derived.dropVolume();
+    return (storeFull || pourDone) && P.count > 0;
+  }
+
+  simulate(rawDt) {
     const h = 1 / CONFIG.substepHz;
-    this.accumulator += dt;
+    this.accumulator += rawDt;
     const start = performance.now();
     let steps = 0;
     while (this.accumulator >= h && steps < CONFIG.maxSubstepsPerFrame) {
@@ -90,28 +110,41 @@ class App {
     if (this.accumulator > maxBacklog) this.accumulator = maxBacklog;
     this.lastSubsteps = steps;
 
-    this.simTime += dt;
-
+    // The turbulence field follows the pour height, since that slider spans
+    // three orders of magnitude and a fixed box would be far too coarse at the
+    // short end.
+    const { min, size } = domainBounds(values.nozzleHeight * 1.15);
+    if (this.curl.setBounds(min, size)) this.curl.builtAt = -Infinity;
     if (values.turbAmplitude > 0) {
-      const stale = this.frameIndex % CONFIG.turbRebuildFrames === 0;
-      if (stale || this.curl.builtAt === -Infinity) {
-        this.curl.rebuild(this.simTime * values.turbTimeScale, values.turbLengthScale);
+      if (this.frameIndex % CONFIG.turbRebuildFrames === 0 || this.curl.builtAt === -Infinity) {
+        this.curl.rebuild(this.simTime * derived.turbTimeScale(), values.eddySize);
       }
     }
 
-    // Order matters: existing grains advance first, then the nozzle adds new
-    // ones already backdated to frame end. Emitting first would integrate the
-    // new grains a second time and double-count their fall.
-    this.integrateBallistic(dt);
-    this.nozzle.step(dt, this.simTime, this.particles, values);
+    // Simulation speed stretches the frame, but a 10x frame integrated in one
+    // step would move a grain several centimetres between samples. Subdivide so
+    // running fast does not also mean running wrong.
+    let remaining = rawDt * values.simSpeed;
+    let iters = 0;
+    while (remaining > 1e-9 && iters < CONFIG.maxBallisticIters) {
+      const step = Math.min(remaining, CONFIG.maxBallisticStep);
+      this.simTime += step;
+      // Order matters: existing grains advance first, then the nozzle adds new
+      // ones already backdated to step end. Emitting first would integrate the
+      // new grains a second time and double-count their fall.
+      this.integrateBallistic(step);
+      this.nozzle.step(step, this.simTime, this.particles, values);
+      remaining -= step;
+      iters++;
+    }
     this.frameIndex++;
   }
 
   integrateBallistic(dt) {
     const P = this.particles;
     const { px, py, pz, vx, vy, vz, radius, vol, phase, live } = P;
-    const g = CONFIG.gravity;
-    const dragK = values.dragK;
+    const g = values.gravity;
+    const dragCoef = derived.dragCoef();
     const amp = values.turbAmplitude;
     const useTurb = amp > 0;
     const curl = this.curl;
@@ -131,10 +164,11 @@ class App {
         fx = tmp[0] * amp; fy = tmp[1] * amp; fz = tmp[2] * amp;
       }
 
-      // Drag is solved implicitly so it cannot go unstable for small grains,
-      // where dragK/radius gets large. The 1/r is what makes size matter: fine
-      // grains are strongly deflected by the turbulence, clumps punch through.
-      const kr = dragK / radius[i];
+      // Drag is solved implicitly so it cannot go unstable for fine grains,
+      // where the coefficient over radius gets large. The 1/r is what makes
+      // size matter: fine grains are strongly deflected by the turbulence,
+      // clumps punch through it.
+      const kr = dragCoef / radius[i];
       const denom = 1 / (1 + dt * kr);
       const nvx = (vx[i] + dt * kr * fx) * denom;
       const nvy = (vy[i] + dt * (kr * fy - g)) * denom;
@@ -204,19 +238,25 @@ class App {
     const grainVol = P.totalVolume();
     const emitted = this.nozzle.emittedVolume;
     // The audit that matters. In M1 only two paths move mass, so this should be
-    // ~0; absorption, emission and fragmentation will each get a chance to
-    // break it later.
+    // ~0; absorption, emission and fragmentation each get a chance to break it
+    // later.
     const residual = emitted - (grainVol + this.lostVolume);
     const rel = emitted > 0 ? Math.abs(residual) / emitted : 0;
+    const grams = emitted * SAND_PARTICLE_DENSITY * 1000;
 
-    this.hud.textContent = [
-      `${fps.toFixed(0)} fps   ${avg.toFixed(1)} ms   substeps ${this.lastSubsteps}`,
+    const lines = [
+      `${fps.toFixed(0)} fps   ${avg.toFixed(1)} ms   sim ${values.simSpeed.toFixed(2)}x`,
       `grains ${P.count} / ${P.capacity}   flight ${phases.ballistic}   resting ${phases.resting}`,
-      `volume  emitted ${emitted.toExponential(3)}  live ${grainVol.toExponential(3)}  lost ${this.lostVolume.toExponential(3)}`,
-      `audit residual ${residual.toExponential(2)}  (${(rel * 100).toFixed(4)}%)`,
-      `crossOriginIsolated ${!!globalThis.crossOriginIsolated}   SharedArrayBuffer ${SHARED_MEMORY_AVAILABLE}`,
-      this.paused ? 'PAUSED  (space run, s step, r reset)' : '(space pause, s step, r reset)',
-    ].join('\n');
+      `poured ${grams < 1000 ? grams.toFixed(1) + ' g' : (grams / 1000).toFixed(2) + ' kg'}` +
+        `   sim clock ${this.simTime.toFixed(2)} s`,
+      `volume audit ${residual.toExponential(2)}  (${(rel * 100).toFixed(4)}%)`,
+    ];
+    if (values.autoRestart && this.idleSeconds > 0) {
+      lines.push(`settled - restarting in ${Math.max(0, values.autoRestartDelay - this.idleSeconds).toFixed(1)} s`);
+    }
+    if (this.restarts > 0) lines.push(`restarts ${this.restarts}`);
+    lines.push(this.paused ? 'PAUSED  (space run, s step, r reset)' : '(space pause, s step, r reset)');
+    this.hud.textContent = lines.join('\n');
   }
 
   frame(now) {
@@ -227,8 +267,24 @@ class App {
 
     if (!this.paused || this.stepOnce) {
       // Cap the step so a backgrounded tab does not resume with a huge jump.
-      this.simulate(Math.min(raw / 1000, 0.1));
+      const dt = Math.min(raw / 1000, 0.1);
+      this.simulate(dt);
       this.stepOnce = false;
+
+      if (values.autoRestart) {
+        // Idle time is measured on the wall clock, not the simulation clock, so
+        // "restart after 2 seconds" means 2 seconds of watching regardless of
+        // the speed multiplier.
+        if (this.isSettled()) {
+          this.idleSeconds += dt;
+          if (this.idleSeconds >= values.autoRestartDelay) {
+            this.reset();
+            this.restarts++;
+          }
+        } else {
+          this.idleSeconds = 0;
+        }
+      }
     }
     this.render();
     this.updateHud(now);
@@ -255,7 +311,7 @@ function main() {
     if (err instanceof GLUnavailableError) {
       fail('WebGL2 unavailable', err.message);
     } else {
-      fail('Failed to start', String(err && err.message || err));
+      fail('Failed to start', String((err && err.message) || err));
       console.error(err);
     }
     return;

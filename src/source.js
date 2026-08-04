@@ -1,14 +1,14 @@
 // The nozzle: volumetric, uneven flow.
 
 import { PHASE_BALLISTIC } from './particles.js';
+import { derived } from './params.js';
 
 const PI_6 = Math.PI / 6;
 
 export class Nozzle {
-  constructor(rng, noise, gravity) {
+  constructor(rng, noise) {
     this.rng = rng;
     this.noise = noise;
-    this.gravity = gravity;
     this.reset();
 
     // Calibration samples for the rate modulation, so that raising
@@ -50,9 +50,9 @@ export class Nozzle {
   // noise, not per-spawn jitter. Exponentiating gives heavier tails and more
   // dramatic chokes than the raw noise would.
   burstFactor(t, v) {
-    if (v.burstIntensity <= 0) return 1;
-    const k = v.burstIntensity * 3;
-    const n = this.noise.noise1(t / Math.max(v.burstTimescale, 1e-3));
+    if (v.surgeDepth <= 0) return 1;
+    const k = v.surgeDepth * 3;
+    const n = this.noise.noise1(t / Math.max(v.surgePeriod, 1e-3));
     // Divide out E[exp(k*n)] so only the variance of the rate is being dialled,
     // not its mean.
     return Math.exp(k * n) / this._normaliser(k);
@@ -67,8 +67,9 @@ export class Nozzle {
   // the clump range instead conserves the clump count exactly.
   sampleDiameter(v) {
     const d = v.medianDiameter * Math.exp(v.sorting * this.rng.gaussian());
-    if (d <= v.maxGrainDiameter) return d;
-    return this.rng.range(v.clumpThreshold, v.maxGrainDiameter);
+    const maxD = derived.maxDiameter();
+    if (d <= maxD) return d;
+    return this.rng.range(derived.clumpDiameter(), maxD);
   }
 
   /**
@@ -82,7 +83,8 @@ export class Nozzle {
    * framerate-independent the way this is.
    */
   step(dt, t, particles, v) {
-    if (!v.continuousPour && this.emittedVolume >= v.dropVolume) return 0;
+    const dropVolume = derived.dropVolume();
+    if (!v.continuousPour && this.emittedVolume >= dropVolume) return 0;
 
     const rate = v.flowRate * this.burstFactor(t, v);
     const budget = rate * dt;
@@ -92,10 +94,11 @@ export class Nozzle {
     // Bound the backlog so a rate spike cannot queue up an unbounded burst.
     if (this.debt > budget * 4) this.debt = budget * 4;
 
-    const g = this.gravity;
+    const g = v.gravity;
     const y0 = v.nozzleHeight;
     const vy0 = -v.initialSpeed;
     const clumpPack = Math.max(v.packingFraction, 0.05);
+    const clumpD = derived.clumpDiameter();
     let consumed = 0;
     let spawned = 0;
 
@@ -103,7 +106,7 @@ export class Nozzle {
       const d = this.sampleDiameter(v);
       const vol = PI_6 * d * d * d;
 
-      if (!v.continuousPour && this.emittedVolume + vol > v.dropVolume) break;
+      if (!v.continuousPour && this.emittedVolume + vol > dropVolume) break;
 
       const i = particles.alloc();
       if (i < 0) break;  // store full; leave the debt for later
@@ -120,7 +123,7 @@ export class Nozzle {
       particles.vy[i] = vy0 - g * delta;
       particles.vz[i] = 0;
 
-      const isAgg = d > v.clumpThreshold;
+      const isAgg = d > clumpD;
       particles.vol[i] = vol;
       // A clump is porous, so its bulk radius exceeds the solid-equivalent
       // sphere. That is also what makes its fragments fit inside it later.

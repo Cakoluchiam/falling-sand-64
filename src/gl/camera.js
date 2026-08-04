@@ -15,10 +15,12 @@ export class OrbitCamera {
     this.distance = opts.distance ?? 8;
     this.target = Float32Array.from(opts.target ?? [0, 1, 0]);
     this.fov = opts.fov ?? 50 * DEG;
-    this.near = opts.near ?? 0.02;
-    this.far = opts.far ?? 200;
+    this.sceneSpan = opts.sceneSpan ?? 1;
     this.minDistance = opts.minDistance ?? 0.3;
     this.maxDistance = opts.maxDistance ?? 80;
+    // Filled by update(); derived from the orbit distance, not fixed.
+    this.near = 0;
+    this.far = 0;
 
     this.eye = new Float32Array(3);
     this.right = new Float32Array(3);
@@ -89,9 +91,18 @@ export class OrbitCamera {
     this.eye[1] = this.target[1] + this.distance * se;
     this.eye[2] = this.target[2] + this.distance * ce * ca;
 
+    // Near and far track the orbit distance rather than being fixed. The scene
+    // spans millimetre grains up to a multi-metre pour height, and a static
+    // pair covering both ends would leave a depth ratio around 1e6 -- enough
+    // z-fighting to make impostor spheres visibly punch through each other when
+    // zoomed in on a single grain.
+    const near = Math.max(this.distance * 0.002, 1e-6);
+    const far = this.distance * 40 + this.sceneSpan;
     mat4.lookAt(this.view, this.eye, this.target, [0, 1, 0]);
-    mat4.perspective(this.proj, this.fov, aspect, this.near, this.far);
+    mat4.perspective(this.proj, this.fov, aspect, near, far);
     mat4.multiply(this.viewProj, this.proj, this.view);
+    this.near = near;
+    this.far = far;
 
     // Camera basis falls out of the view matrix rows.
     this.right[0] = this.view[0]; this.right[1] = this.view[4]; this.right[2] = this.view[8];
