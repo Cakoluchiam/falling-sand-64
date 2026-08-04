@@ -1,9 +1,13 @@
 // The nozzle: volumetric, uneven flow.
 
 import { PHASE_BALLISTIC } from './particles.js';
-import { derived, CONFIG } from './params.js';
+import { derived } from './params.js';
 
 const PI_6 = Math.PI / 6;
+
+// Share of a step's volume budget that may go to paying back what a clump
+// borrowed. Below 1 so the stream always keeps flowing behind a clump.
+const ARREARS_RATE = 0.5;
 
 export class Nozzle {
   constructor(rng, noise) {
@@ -41,11 +45,22 @@ export class Nozzle {
 
   reset() {
     this.debt = 0;
-    this.clumpDebt = 0;
+    this.arrears = 0;
+    this.clumpOwed = 0;
     this.pendingClumpVol = 0;
+    this.pendingThreshold = 0;
     this.emittedVolume = 0;
     this.emittedCount = 0;
     this.clumpCount = 0;
+  }
+
+  // Size and trigger point for the next clump. The threshold is jittered so
+  // clumps do not arrive on a metronome, but the *subtraction* when one is
+  // emitted is the exact clump volume, so the jitter shifts timing without
+  // touching the long-run rate.
+  _armClump(v) {
+    this.pendingClumpVol = this._drawClumpVolume(v);
+    this.pendingThreshold = this.pendingClumpVol * (0.5 + this.rng.next());
   }
 
   // Instantaneous rate multiplier. Choking is correlated in time -- the flow
@@ -93,15 +108,39 @@ export class Nozzle {
     const budget = rate * dt;
     if (budget <= 0) return 0;
 
-    // Split the incoming volume between the two populations. Both jars use the
-    // same carry-the-remainder pattern, so the totals stay exact and the split
-    // is honoured over time even though a clump is thousands of grains' worth
-    // of sand and only becomes affordable every few seconds.
-    const clumpShare = budget * Math.min(Math.max(v.clumpFraction, 0), 1);
-    this.clumpDebt += clumpShare;
-    this.debt += budget - clumpShare;
+    this.debt += budget;
     // Bound the backlog so a rate spike cannot queue up an unbounded burst.
     if (this.debt > budget * 4) this.debt = budget * 4;
+
+    // Work off what a recent clump borrowed from the stream, capped so the sand
+    // thins rather than stopping. See the clamp below for why this exists.
+    if (this.arrears > 0) {
+      const payment = Math.min(this.arrears, budget * ARREARS_RATE);
+      this.arrears -= payment;
+      this.debt -= payment;
+    }
+
+    // Clumpiness is a property of the sand, not a second stream metered
+    // alongside it. Every body emitted credits `clumpOwed` with its share of
+    // the clump fraction; when enough has built up, the next body out of the
+    // nozzle is a clump instead of a grain, and its full volume is deducted.
+    //
+    // Two earlier designs were worse. A separate volume jar filled on its own
+    // schedule and, because it kept accruing after the store was full, went on
+    // releasing clumps long after the sand had stopped -- clumps trailing the
+    // pour, which looks nothing like sand. A fixed per-body probability fixed
+    // the trailing but is memoryless, and with clumps this rare that means a
+    // pour of a few hundred thousand grains shows three clumps or none purely
+    // by luck.
+    //
+    // Crediting per emitted body fixes both. Nothing accrues while the nozzle
+    // is blocked, because accrual only happens when a body actually comes out.
+    // And the ledger is self-correcting: emitting a clump drives `clumpOwed`
+    // sharply negative, suppressing further clumps until the sand flow has paid
+    // it back, so a short pour still shows close to the requested proportion
+    // instead of a Poisson lottery.
+    const f = Math.min(Math.max(v.clumpFraction, 0), 1);
+    if (f > 0 && this.pendingClumpVol <= 0) this._armClump(v);
 
     const ctx = {
       g: v.gravity,
@@ -115,38 +154,50 @@ export class Nozzle {
     };
     let spawned = 0;
 
-    // Clumps first, so a clump lands at the head of its frame's sand rather
-    // than trailing it.
-    //
-    // The pending draw is held rather than resampled each frame. Redrawing
-    // would bias the population small, because a smaller clump becomes
-    // affordable sooner and would win the race disproportionately often.
-    if (v.clumpFraction > 0) {
-      if (this.pendingClumpVol <= 0) this.pendingClumpVol = this._drawClumpVolume(v);
-      while (this.clumpDebt >= this.pendingClumpVol) {
-        const vol = this.pendingClumpVol;
-        if (!v.continuousPour && this.emittedVolume + vol > dropVolume) break;
-        if (!this._spawn(particles, v, ctx, vol, true)) break;
-        this.clumpDebt -= vol;
-        this.clumpCount++;
-        spawned++;
-        this.pendingClumpVol = this._drawClumpVolume(v);
-      }
-    }
-
-    // Leave headroom so pending clumps can still be placed once the store is
-    // otherwise full.
-    const grainLimit = v.clumpFraction > 0
-      ? particles.capacity - CONFIG.clumpReserveSlots
-      : particles.capacity;
-
     while (this.debt > 0) {
-      if (particles.count >= grainLimit) break;
-      const d = this.sampleDiameter(v);
-      const vol = PI_6 * d * d * d;
+      let vol, isAgg, fromClumpLedger = false;
+      if (f > 0 && this.clumpOwed >= this.pendingThreshold) {
+        vol = this.pendingClumpVol;
+        isAgg = true;
+        fromClumpLedger = true;
+      } else {
+        const d = this.sampleDiameter(v);
+        vol = PI_6 * d * d * d;
+        // An oversized ordinary grain still counts as an aggregate. Rare once
+        // clumps have their own population, but not impossible.
+        isAgg = d > ctx.clumpD;
+      }
+
       if (!v.continuousPour && this.emittedVolume + vol > dropVolume) break;
-      if (!this._spawn(particles, v, ctx, vol, d > ctx.clumpD)) break;
+      // Store full: stop, and leave the debt for later. Crucially the ledger is
+      // not credited either, so a blocked nozzle cannot bank clumps to release
+      // once space frees up.
+      if (!this._spawn(particles, v, ctx, vol, isAgg)) break;
+
       this.debt -= vol;
+      // Every body that actually came out credits the ledger with its share.
+      this.clumpOwed += f * vol;
+      if (fromClumpLedger) {
+        // Deduct the exact volume, not the jittered threshold, so the timing
+        // jitter cannot drift the long-run fraction.
+        this.clumpOwed -= vol;
+        this._armClump(v);
+
+        // A clump is a large slug of volume relative to a frame. Charging it to
+        // the stream all at once stops the sand dead for as long as the clump
+        // represents -- 21 ms at the reference pour rate, which is invisible,
+        // but 139 ms at a slow pour, which reads as the clump leading a hole in
+        // the stream. Cap how far one clump can drive the stream negative and
+        // carry the rest as arrears, so the sand thins for a moment instead of
+        // stopping. Volume still balances: arrears are paid out of the same
+        // budget, just spread over the following steps.
+        const floor = -budget;
+        if (this.debt < floor) {
+          this.arrears += floor - this.debt;
+          this.debt = floor;
+        }
+      }
+      if (isAgg) this.clumpCount++;
       spawned++;
     }
     return spawned;

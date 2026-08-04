@@ -33,13 +33,6 @@ export const CONFIG = {
 
   grainCapacity: 200000,
 
-  // Slots ordinary grains may not take, so a rare large body is never starved
-  // out by common small ones. Without this the store fills with sand long
-  // before the clump jar can afford its first clump, and no clump ever appears
-  // -- clumps are thousands of grains' worth of volume, so they accrue slowly
-  // while grains are spending the budget continuously.
-  clumpReserveSlots: 64,
-
   substepHz: 240,
   maxSubstepsPerFrame: 8,
   frameBudgetMs: 12,
