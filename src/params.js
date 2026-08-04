@@ -94,12 +94,13 @@ export const values = {
   // Stored as log-sigma; shown as the coarse:fine size ratio, which is what a
   // sieve analysis reports and what a person can actually picture.
   sorting: Math.log(2) / 2,
-  // Multiples of the median, so they keep their meaning when grain size moves.
-  // Set high enough that the grain tail almost never crosses it: now that
-  // clumps have their own population, a grain-tail lump is an accidental
-  // stray rather than the intended mechanism, and at 2.55x it produced ~700
-  // stray pebbles per fill competing with the clumps you actually want.
-  clumpThreshold: 3.5,
+  // Smallest a clump can be, as a multiple of the median grain. This is a
+  // property of *fragmentation*, not of grain size: when a clump shatters, a
+  // piece larger than this is still a clump and can shatter again, while a
+  // smaller piece becomes ordinary sand. It is what stops fragmentation
+  // recursing forever, and it is the only reason the threshold exists -- a
+  // large grain is simply a large grain and is never promoted to a clump.
+  minClumpSize: 3.5,
   maxGrainRatio: 12,
   // --- Clumps ---
   // Clumps get their own population rather than being drawn from the tail of
@@ -172,8 +173,15 @@ export const derived = {
   staticAngle() {
     return values.reposeAngle + values.avalancheGap;
   },
-  clumpDiameter() {
-    return values.clumpThreshold * values.medianDiameter;
+  minClumpDiameter() {
+    return values.minClumpSize * values.medianDiameter;
+  },
+  // How many minimum-size clumps one spawned clump could break down into. The
+  // ceiling on fragmentation depth, and a useful sanity read: if it is near 1,
+  // clumps turn straight to sand on their first impact.
+  fragmentsPerClump() {
+    const r = values.clumpSize / Math.max(values.minClumpSize, 1e-6);
+    return r * r * r;
   },
   maxDiameter() {
     return values.maxGrainRatio * values.medianDiameter;
@@ -221,22 +229,74 @@ const ML_PER_S = { unit: 'mL/s', scale: (SAND_PARTICLE_DENSITY / SAND_BULK_DENSI
 
 // min/max are given in the FIRST unit listed and converted to SI on load, so
 // the slider curve does not move when the display unit is toggled.
+const SOON = ' Not implemented yet — this milestone builds the falling sand only.';
+
 export const SCHEMA = [
-  { key: 'simSpeed', group: 'Run', label: 'Simulation speed', units: [{ unit: 'x', scale: 1 }], min: 0.1, max: 10, log: true },
-  { key: 'gravity', group: 'Run', label: 'Gravity', units: [{ unit: 'm/s²', scale: 1 }], min: 0.62, max: 24.79, log: true },
-  { key: 'autoRestart', group: 'Run', label: 'Auto restart when settled', type: 'bool' },
-  { key: 'autoRestartDelay', group: 'Run', label: 'Restart after', units: [{ unit: 's', scale: 1 }], min: 0.5, max: 10 },
+  {
+    key: 'simSpeed', group: 'Run', label: 'Simulation speed',
+    units: [{ unit: 'x', scale: 1 }], min: 0.1, max: 10, log: true,
+    help: 'How fast the simulation runs against the wall clock. Drop below 1x to watch grains in flight. The physics is unchanged — only the clock moves.',
+  },
+  {
+    key: 'gravity', group: 'Run', label: 'Gravity',
+    units: [{ unit: 'm/s²', scale: 1 }], min: 0.62, max: 24.79, log: true,
+    help: 'Surface gravity. The range runs Pluto to Jupiter, which puts the Moon at 25%, Mars at 50% and Earth at 75%.',
+  },
+  {
+    key: 'autoRestart', group: 'Run', label: 'Auto restart when settled', type: 'bool',
+    help: 'Empty the sandbox and pour again once everything has landed and no more sand can come out.',
+  },
+  {
+    key: 'autoRestartDelay', group: 'Run', label: 'Restart after',
+    units: [{ unit: 's', scale: 1 }], min: 0.5, max: 10,
+    help: 'How long to wait after the sand settles before restarting. Real seconds, so simulation speed does not change it.',
+  },
 
-  { key: 'flowRate', group: 'Source', label: 'Flow rate', units: [G_PER_S, ML_PER_S], min: 8, max: 20000, log: true, logZero: true },
-  { key: 'dropMass', group: 'Source', label: 'Bucket size', units: [{ unit: 'kg', scale: 1 }], min: 0.4, max: 40, log: true },
-  { key: 'continuousPour', group: 'Source', label: 'Continuous pour', type: 'bool' },
-  { key: 'apertureRadius', group: 'Source', label: 'Aperture radius', units: [{ unit: 'cm', scale: 100 }], min: 0.2, max: 20, log: true },
-  { key: 'nozzleHeight', group: 'Source', label: 'Pour height', units: [{ unit: 'cm', scale: 100 }], min: 2, max: 1250, log: true },
-  { key: 'initialSpeed', group: 'Source', label: 'Initial speed', units: [{ unit: 'm/s', scale: 1 }], min: 0.04, max: 4, log: true, logZero: true },
-  { key: 'surgePeriod', group: 'Source', label: 'Surge period', units: [{ unit: 's', scale: 1 }], min: 0.06, max: 6, log: true },
-  { key: 'surgeDepth', group: 'Source', label: 'Surge depth', units: [{ unit: '', scale: 1 }], min: 0, max: 1 },
+  {
+    key: 'flowRate', group: 'Source', label: 'Flow rate',
+    units: [G_PER_S, ML_PER_S], min: 8, max: 20000, log: true, logZero: true,
+    help: 'How much sand leaves the nozzle per second. Measured by volume rather than grain count, so changing grain size does not change how much sand comes out. Click the unit to switch between weight and volume.',
+  },
+  {
+    key: 'dropMass', group: 'Source', label: 'Bucket size',
+    units: [{ unit: 'kg', scale: 1 }], min: 0.4, max: 40, log: true,
+    help: 'How much sand one pour delivers, when Continuous pour is off. A 2.5 litre beach bucket holds about 4 kg.',
+  },
+  {
+    key: 'continuousPour', group: 'Source', label: 'Continuous pour', type: 'bool',
+    help: 'Pour without stopping, instead of delivering one bucket and finishing.',
+  },
+  {
+    key: 'apertureRadius', group: 'Source', label: 'Aperture radius',
+    units: [{ unit: 'cm', scale: 100 }], min: 0.2, max: 20, log: true,
+    help: 'Radius of the opening the sand falls through. The stream off a tipped bucket lip is roughly 2 cm.',
+  },
+  {
+    key: 'nozzleHeight', group: 'Source', label: 'Pour height',
+    units: [{ unit: 'cm', scale: 100 }], min: 2, max: 1250, log: true,
+    help: 'How high above the floor the sand is released. One of the things this project exists to measure — dropping from higher spreads the pile wider.',
+  },
+  {
+    key: 'initialSpeed', group: 'Source', label: 'Initial speed',
+    units: [{ unit: 'm/s', scale: 1 }], min: 0.04, max: 4, log: true, logZero: true,
+    help: 'Downward speed the sand already carries as it leaves the nozzle, before gravity adds any.',
+  },
+  {
+    key: 'surgePeriod', group: 'Source', label: 'Surge period',
+    units: [{ unit: 's', scale: 1 }], min: 0.06, max: 6, log: true,
+    help: 'How long one choke-and-release cycle lasts. Real pours glug rather than running steady.',
+  },
+  {
+    key: 'surgeDepth', group: 'Source', label: 'Surge depth',
+    units: [{ unit: '', scale: 1 }], min: 0, max: 1,
+    help: 'How uneven the flow is. Raising it changes only the variability — the average flow rate stays where you set it.',
+  },
 
-  { key: 'medianDiameter', group: 'Grain', label: 'Median diameter', units: [{ unit: 'mm', scale: 1000 }], min: 0.05, max: 5, log: true },
+  {
+    key: 'medianDiameter', group: 'Grain', label: 'Median diameter',
+    units: [{ unit: 'mm', scale: 1000 }], min: 0.05, max: 5, log: true,
+    help: 'The middle grain size — half the grains come out larger, half smaller. Play sand is about 0.5 mm; 1 mm is coarse sand; 5 mm is fine gravel.',
+  },
   {
     key: 'sorting', group: 'Grain', label: 'Sorting (coarse:fine)',
     // Linear in log-sigma, which IS log-uniform in the displayed ratio, since
@@ -245,11 +305,19 @@ export const SCHEMA = [
     units: [{ unit: '×', scale: 1 }], min: 1.1, max: 3.7,
     toDisplay: (s) => Math.exp(2 * s),
     fromDisplay: (r) => Math.log(Math.max(r, 1.0001)) / 2,
+    help: 'How mixed the grain sizes are, as the ratio of the coarse quarter to the fine quarter. 1.1x is almost uniform, 2x is washed play sand, 3.7x is unsorted river sand.',
   },
-  { key: 'clumpThreshold', group: 'Grain', label: 'Clump threshold', units: [{ unit: '× median', scale: 1 }], min: 1.3, max: 5, log: true },
-  { key: 'maxGrainRatio', group: 'Grain', label: 'Max diameter', units: [{ unit: '× median', scale: 1 }], min: 3, max: 48, log: true },
+  {
+    key: 'maxGrainRatio', group: 'Grain', label: 'Grain size cap',
+    units: [{ unit: '× median', scale: 1 }], min: 3, max: 48, log: true,
+    help: 'Hard ceiling on the grain size lottery. Grain sizes have no natural upper limit, so without a cap a long enough pour would eventually draw something absurd. Grains are always solid particles no matter how large, so this only trims the tail — it has nothing to do with clumps. At realistic sorting it almost never fires; this is insurance, not a control.',
+  },
 
-  { key: 'clumpFraction', group: 'Clumps', label: 'Sand arriving as clumps', units: [{ unit: '%', scale: 100 }], min: 0.05, max: 10, log: true, logZero: true },
+  {
+    key: 'clumpFraction', group: 'Clumps', label: 'Sand arriving as clumps',
+    units: [{ unit: '%', scale: 100 }], min: 0.05, max: 10, log: true, logZero: true,
+    help: 'How much of the poured sand arrives already stuck together. How often clumps appear follows from this and the clump size — the Derived panel shows the resulting rate.',
+  },
   // Stored as a multiple of the median so the slider range is scale-free, but
   // displayed in mm, which is what you can actually picture. `dynamic` exists
   // because that conversion depends on another parameter, so it cannot be a
@@ -258,29 +326,85 @@ export const SCHEMA = [
     key: 'clumpSize', group: 'Clumps', label: 'Clump size',
     units: [{ unit: 'mm', scale: 1 }], min: 4, max: 64, log: true,
     dynamic: (mult) => ({ value: mult * values.medianDiameter * 1000, unit: 'mm' }),
+    help: 'How big one clump is. Set as a multiple of the grain size, so it follows the median slider, and shown in mm. Volume grows as the cube of width, so a clump 17x wider than a grain holds around 5000 grains worth of sand — the Derived panel does that arithmetic for you.',
   },
   {
     key: 'clumpSorting', group: 'Clumps', label: 'Clump size spread',
     units: [{ unit: '×', scale: 1 }], min: 1.05, max: 3,
     toDisplay: (s) => Math.exp(2 * s),
     fromDisplay: (r) => Math.log(Math.max(r, 1.0001)) / 2,
+    help: 'How much clumps vary in size, coarse to fine. Keep it narrow and they stay recognisably clump-sized instead of blending into the sand.',
   },
-  { key: 'shatterSpeed', group: 'Clumps', label: 'Shatter speed', units: [{ unit: 'm/s', scale: 1 }], min: 0.15, max: 15, log: true, logZero: true },
+  {
+    key: 'shatterSpeed', group: 'Clumps', label: 'Shatter speed',
+    units: [{ unit: 'm/s', scale: 1 }], min: 0.15, max: 15, log: true, logZero: true,
+    pending: true,
+    help: 'Impact speed at which a clump breaks apart. Low and they burst on landing; high and they survive to sit on the pile intact.' + SOON,
+  },
+  {
+    key: 'minClumpSize', group: 'Clumps', label: 'Smallest clump',
+    units: [{ unit: '× median', scale: 1 }], min: 1.3, max: 5, log: true,
+    pending: true,
+    help: 'When a clump shatters, a piece bigger than this is still a clump and can shatter again later; anything smaller becomes ordinary sand and is done. This is purely what stops fragmentation recursing forever — it says nothing about grain sizes. Lower it and a clump can break down through more generations before its pieces turn to sand.' + SOON,
+  },
 
-  { key: 'turbAmplitude', group: 'Air', label: 'Turbulence', units: [{ unit: 'm/s', scale: 1 }], min: 0.01, max: 9, log: true, logZero: true },
-  { key: 'eddySize', group: 'Air', label: 'Eddy size', units: [{ unit: 'cm', scale: 100 }], min: 0.5, max: 800, log: true },
-  { key: 'eddyLifetime', group: 'Air', label: 'Eddy lifetime', units: [{ unit: 's', scale: 1 }], min: 0.07, max: 7, log: true },
-  { key: 'fallSpeed', group: 'Air', label: 'Fall speed (median)', units: [{ unit: 'm/s', scale: 1 }], min: 0.5, max: 50, log: true },
+  {
+    key: 'turbAmplitude', group: 'Air', label: 'Turbulence',
+    units: [{ unit: 'm/s', scale: 1 }], min: 0.01, max: 9, log: true, logZero: true,
+    help: 'How strongly the air stirs the falling sand. A light outdoor breeze moves air at about 0.3 m/s. This is what broadens and flattens the pile.',
+  },
+  {
+    key: 'eddySize', group: 'Air', label: 'Eddy size',
+    units: [{ unit: 'cm', scale: 100 }], min: 0.5, max: 800, log: true,
+    help: 'How large the swirls in the air are. Eddies tend to match whatever is shedding them, so a bucket makes bucket-sized ones. Small eddies scatter grains individually; large ones push the whole stream sideways.',
+  },
+  {
+    key: 'eddyLifetime', group: 'Air', label: 'Eddy lifetime',
+    units: [{ unit: 's', scale: 1 }], min: 0.07, max: 7, log: true,
+    help: 'How long a swirl lasts before the pattern rearranges. Long values behave like a steady wind, short ones like flickering gusts.',
+  },
+  {
+    key: 'fallSpeed', group: 'Air', label: 'Fall speed (median)',
+    units: [{ unit: 'm/s', scale: 1 }], min: 0.5, max: 50, log: true,
+    help: 'Terminal velocity of a median grain in still air, which is how air resistance is set. Bigger grains fall faster and smaller ones slower in proportion, which is why fine sand drifts and clumps punch straight through.',
+  },
 
-  { key: 'reposeAngle', group: 'Pile', label: 'Repose angle', units: [{ unit: '°', scale: 1 }], min: 15, max: 49 },
-  { key: 'avalancheGap', group: 'Pile', label: 'Avalanche gap', units: [{ unit: '° over repose', scale: 1 }], min: 0, max: 6 },
-  { key: 'slumpHalfLife', group: 'Pile', label: 'Slump half-life', units: [{ unit: 's', scale: 1 }], min: 0.01, max: 1, log: true },
+  {
+    key: 'reposeAngle', group: 'Pile', label: 'Repose angle',
+    units: [{ unit: '°', scale: 1 }], min: 15, max: 49, pending: true,
+    help: 'The steepest slope a pile settles back to. Dry sand rests near 32°.' + SOON,
+  },
+  {
+    key: 'avalancheGap', group: 'Pile', label: 'Avalanche gap',
+    units: [{ unit: '° over repose', scale: 1 }], min: 0, max: 6, pending: true,
+    help: 'How much steeper than the repose angle a slope gets before it lets go. This gap is what makes avalanches happen in bursts rather than as a constant smooth trickle.' + SOON,
+  },
+  {
+    key: 'slumpHalfLife', group: 'Pile', label: 'Slump half-life',
+    units: [{ unit: 's', scale: 1 }], min: 0.01, max: 1, log: true, pending: true,
+    help: 'How quickly a too-steep slope collapses once it starts moving.' + SOON,
+  },
 
-  { key: 'activeLayerDepth', group: 'Exchange', label: 'Active layer', units: [{ unit: ' grains', scale: 1 }], min: 0.2, max: 20, log: true, logZero: true },
-  { key: 'pureDEM', group: 'Exchange', label: 'Pure DEM (no absorption)', type: 'bool' },
-  { key: 'sizeMemory', group: 'Exchange', label: 'Size memory', type: 'bool' },
+  {
+    key: 'activeLayerDepth', group: 'Exchange', label: 'Active layer',
+    units: [{ unit: ' grains', scale: 1 }], min: 0.2, max: 20, log: true, logZero: true,
+    pending: true,
+    help: 'How deep the layer of individually simulated grains goes, counted in grain diameters. Anything buried deeper is absorbed into the pile surface to keep the grain budget bounded. 0 absorbs as soon as a grain is covered.' + SOON,
+  },
+  {
+    key: 'pureDEM', group: 'Exchange', label: 'Pure DEM (no absorption)', type: 'bool', pending: true,
+    help: 'Never absorb anything — simulate every grain forever. A diagnostic for checking that absorption is not changing the pile shape, not a usable setting: the grain budget fills in seconds.' + SOON,
+  },
+  {
+    key: 'sizeMemory', group: 'Exchange', label: 'Size memory', type: 'bool', pending: true,
+    help: 'Remember which grain sizes were buried where, so a disturbed pile re-exposes the sizes that were actually there instead of average ones.' + SOON,
+  },
 
-  { key: 'grainScale', group: 'Render', label: 'Grain scale', units: [{ unit: '×', scale: 1 }], min: 0.5, max: 2, log: true },
+  {
+    key: 'grainScale', group: 'Render', label: 'Grain scale',
+    units: [{ unit: '×', scale: 1 }], min: 0.5, max: 2, log: true,
+    help: 'Draws grains larger or smaller than they really are. Purely visual — it changes nothing in the simulation.',
+  },
 ];
 
 // Convert the display-unit bounds to SI once, so slider mapping is always in SI
@@ -305,10 +429,9 @@ export function fromDisplay(s, display, unitIndex = 0) {
 
 // Cross-parameter constraints a plain slider range cannot express.
 export function enforceConstraints() {
-  if (values.maxGrainRatio <= values.clumpThreshold) {
-    // The clump-preserving resample draws uniformly on
-    // [clumpThreshold, maxGrainRatio]; if that interval collapses there is
-    // nothing to draw from.
-    values.maxGrainRatio = values.clumpThreshold * 1.5;
+  if (values.clumpSize <= values.minClumpSize) {
+    // A clump that spawns smaller than the smallest allowed clump is a
+    // contradiction: it would be born already too small to exist.
+    values.minClumpSize = values.clumpSize / 1.5;
   }
 }

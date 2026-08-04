@@ -76,18 +76,20 @@ export class Nozzle {
     return Math.exp(k * n) / this._normaliser(k);
   }
 
-  // Grain diameter, log-normal and truncated.
+  // Grain diameter: log-normal, rejection-sampled under the size cap.
   //
-  // The truncation rule matters more than it looks. Resampling an over-cap draw
-  // from the full distribution would return a sub-threshold grain almost every
-  // time, so raising or lowering maxGrainDiameter would quietly change how
-  // *often* clumps appear rather than only how big they get. Redrawing within
-  // the clump range instead conserves the clump count exactly.
+  // Grains are always solid particles, however large they come out. A grain is
+  // never promoted to a clump for being big -- clumps are a separate thing that
+  // represents many grains bound together, and they come from the clump ledger.
+  // The cap exists only because the size distribution is unbounded above and
+  // the spatial hash needs a hard ceiling to size its cells against.
   sampleDiameter(v) {
-    const d = v.medianDiameter * Math.exp(v.sorting * this.rng.gaussian());
     const maxD = derived.maxDiameter();
-    if (d <= maxD) return d;
-    return this.rng.range(derived.clumpDiameter(), maxD);
+    for (let i = 0; i < 16; i++) {
+      const d = v.medianDiameter * Math.exp(v.sorting * this.rng.gaussian());
+      if (d <= maxD) return d;
+    }
+    return maxD;   // guard against a pathological cap below the median
   }
 
   /**
@@ -147,7 +149,6 @@ export class Nozzle {
       y0: v.nozzleHeight,
       vy0: -v.initialSpeed,
       clumpPack: Math.max(v.packingFraction, 0.05),
-      clumpD: derived.clumpDiameter(),
       budget,
       dt,
       consumed: 0,
@@ -163,9 +164,8 @@ export class Nozzle {
       } else {
         const d = this.sampleDiameter(v);
         vol = PI_6 * d * d * d;
-        // An oversized ordinary grain still counts as an aggregate. Rare once
-        // clumps have their own population, but not impossible.
-        isAgg = d > ctx.clumpD;
+        // Always solid. Size does not make a grain a clump.
+        isAgg = false;
       }
 
       if (!v.continuousPour && this.emittedVolume + vol > dropVolume) break;

@@ -63,6 +63,12 @@ export function buildPanel(container, schema, vals, onChange) {
     for (const s of items) {
       const row = document.createElement('div');
       row.className = 'row';
+      // Native title rather than a custom popup: zero dependencies, and it
+      // cannot end up positioned off the edge of a 264px panel.
+      if (s.help) row.title = `${s.label}\n\n${s.help}`;
+      // Controls whose milestone has not been built yet are dimmed, so the
+      // panel does not imply they do something.
+      if (s.pending) row.classList.add('pending');
 
       const label = document.createElement('label');
       label.textContent = s.label;
@@ -107,7 +113,10 @@ export function buildPanel(container, schema, vals, onChange) {
             out.textContent = format(toDisplay(s, vals[s.key], ui));
             unit.textContent = s.units[ui].unit;
           }
-          unit.title = s.units.length > 1 ? 'click to change units' : '';
+          // Only override the row's description where the button does
+          // something; an empty title on a child suppresses the parent's.
+          if (s.units.length > 1) unit.title = 'click to change units';
+          else unit.removeAttribute('title');
           input.value = toSlider(s, vals[s.key]);
         };
 
@@ -144,14 +153,6 @@ export function buildPanel(container, schema, vals, onChange) {
   derivedSec.appendChild(dpre);
   container.appendChild(derivedSec);
 
-  function erfc(x) {
-    const z = Math.abs(x), t = 1 / (1 + z / 2);
-    const r = t * Math.exp(-z * z - 1.26551223 + t * (1.00002368 + t * (0.37409196 +
-      t * (0.09678418 + t * (-0.18628806 + t * (0.27886807 + t * (-1.13520398 +
-      t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))));
-    return x >= 0 ? r : 2 - r;
-  }
-
   function paintDerived() {
     const grainVol = derived.grainVolume();
     const bucketGrains = values.dropMass / (grainVol * SAND_PARTICLE_DENSITY);
@@ -164,17 +165,12 @@ export function buildPanel(container, schema, vals, onChange) {
       ? 'off'
       : perSec >= 1 ? `${perSec.toFixed(1)}/s` : `one every ${(1 / perSec).toFixed(1)} s`;
 
-    // Oversized ordinary grains also count as aggregates. Worth surfacing
-    // separately: it is easy to widen sorting for its own sake and end up with
-    // a stream full of accidental lumps.
-    const zc = Math.log(values.clumpThreshold) / values.sorting;
-    const strayPct = 50 * erfc(zc / Math.SQRT2);
-
     dpre.textContent = [
       `clump      ${format(derived.clumpMetres() * 1000)} mm, ${format(clumpMass)} g`,
       `           ${format(derived.clumpGrains())} grains of sand each`,
       `rate       ${rate}`,
-      `stray lumps ${strayPct < 0.005 ? 'none' : strayPct.toFixed(2) + '% of grains'}`,
+      `breaks to  ${format(derived.minClumpDiameter() * 1000)} mm min` +
+        ` (~${format(derived.fragmentsPerClump())} pieces)`,
       `bucket     ${(bucketGrains / 1e6).toFixed(1)}M grains, pours in ${format(pourSeconds)} s`,
       `active layer ${format(derived.activeLayerMetres() * 1000)} mm`,
       `static angle ${derived.staticAngle().toFixed(1)}°`,
