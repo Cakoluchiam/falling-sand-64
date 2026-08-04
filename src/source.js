@@ -76,20 +76,31 @@ export class Nozzle {
     return Math.exp(k * n) / this._normaliser(k);
   }
 
-  // Grain diameter: log-normal, rejection-sampled under the size cap.
-  //
-  // Grains are always solid particles, however large they come out. A grain is
-  // never promoted to a clump for being big -- clumps are a separate thing that
-  // represents many grains bound together, and they come from the clump ledger.
-  // The cap exists only because the size distribution is unbounded above and
-  // the spatial hash needs a hard ceiling to size its cells against.
+  /**
+   * Grain diameter: log-normal about the median, truncated to the size limits.
+   *
+   * Grains are always solid particles, however large they come out. Size never
+   * promotes a grain to a clump -- clumps are a separate thing representing
+   * many grains bound together, and they come from the clump ledger.
+   *
+   * Both limits matter. A log-normal is unbounded in *both* directions: without
+   * an upper limit a long pour eventually draws something the spatial hash
+   * cannot size cells for, and without a lower one it draws grains tens of
+   * times finer than the median, which behave as airborne dust because terminal
+   * velocity falls off with radius.
+   *
+   * Sampling is by inverting the CDF between the limits rather than redrawing
+   * until a draw fits, so the limits stay exact no matter how tightly they are
+   * closed up.
+   */
   sampleDiameter(v) {
-    const maxD = derived.maxDiameter();
-    for (let i = 0; i < 16; i++) {
-      const d = v.medianDiameter * Math.exp(v.sorting * this.rng.gaussian());
-      if (d <= maxD) return d;
-    }
-    return maxD;   // guard against a pathological cap below the median
+    const s = v.sorting;
+    // Zero spread is a legitimate setting, not an edge case: it is how you ask
+    // for perfectly uniform sand.
+    if (s <= 0) return v.medianDiameter;
+    const lo = Math.log(v.minGrainRatio) / s;
+    const hi = Math.log(v.maxGrainRatio) / s;
+    return v.medianDiameter * Math.exp(s * this.rng.truncatedGaussian(lo, hi));
   }
 
   /**

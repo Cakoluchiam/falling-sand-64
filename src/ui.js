@@ -154,9 +154,14 @@ export function buildPanel(container, schema, vals, onChange) {
   container.appendChild(derivedSec);
 
   function paintDerived() {
-    const grainVol = derived.grainVolume();
-    const bucketGrains = values.dropMass / (grainVol * SAND_PARTICLE_DENSITY);
+    // Mean volume, not median: volume cubes the size spread, so using the
+    // median would overstate the grain count by 72% at default sorting.
+    const bucketGrains = values.dropMass / (derived.meanGrainVolume() * SAND_PARTICLE_DENSITY);
     const pourSeconds = derived.dropVolume() / Math.max(values.flowRate, 1e-12);
+    const uniform = values.sorting <= 0;
+    const grainRange = uniform
+      ? `all exactly ${format(values.medianDiameter * 1000)} mm`
+      : `${format(derived.minGrainDiameter() * 1000)} – ${format(derived.maxDiameter() * 1000)} mm`;
 
     // Clumps from the dedicated population.
     const perSec = derived.clumpsPerSecond();
@@ -166,6 +171,7 @@ export function buildPanel(container, schema, vals, onChange) {
       : perSec >= 1 ? `${perSec.toFixed(1)}/s` : `one every ${(1 / perSec).toFixed(1)} s`;
 
     dpre.textContent = [
+      `grains     ${grainRange}`,
       `clump      ${format(derived.clumpMetres() * 1000)} mm, ${format(clumpMass)} g`,
       `           ${format(derived.clumpGrains())} grains of sand each`,
       `rate       ${rate}`,

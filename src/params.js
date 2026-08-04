@@ -92,8 +92,14 @@ export const values = {
   // --- Grain ---
   medianDiameter: 0.001,
   // Stored as log-sigma; shown as the coarse:fine size ratio, which is what a
-  // sieve analysis reports and what a person can actually picture.
+  // sieve analysis reports and what a person can actually picture. Zero is
+  // reachable and means every grain is exactly the median size.
   sorting: Math.log(2) / 2,
+  // Size limits, as multiples of the median. A log-normal is unbounded both
+  // ways, so both ends need a stop: unbounded above eventually draws a grain
+  // the spatial hash cannot size for, and unbounded below draws grains tens of
+  // times finer than the median that drift like dust instead of falling.
+  minGrainRatio: 0.1,
   // Smallest a clump can be, as a multiple of the median grain. This is a
   // property of *fragmentation*, not of grain size: when a clump shatters, a
   // piece larger than this is still a clump and can shatter again, while a
@@ -192,6 +198,16 @@ export const derived = {
   grainVolume() {
     const d = values.medianDiameter;
     return (Math.PI / 6) * d * d * d;
+  },
+  // Mean, not median. Volume cubes the size spread, so at 2x sorting the
+  // average grain holds 72% more sand than the median one -- which is what any
+  // "how many grains in a bucket" figure has to divide by.
+  meanGrainVolume() {
+    const s = values.sorting;
+    return derived.grainVolume() * Math.exp(4.5 * s * s);
+  },
+  minGrainDiameter() {
+    return values.minGrainRatio * values.medianDiameter;
   },
   clumpMetres() {
     return values.clumpSize * values.medianDiameter;
@@ -301,16 +317,22 @@ export const SCHEMA = [
     key: 'sorting', group: 'Grain', label: 'Sorting (coarse:fine)',
     // Linear in log-sigma, which IS log-uniform in the displayed ratio, since
     // ratio = exp(2*sigma). Marking this `log` would double the transform and
-    // land the midpoint at 1.4x instead of 2x.
-    units: [{ unit: '×', scale: 1 }], min: 1.1, max: 3.7,
+    // land the midpoint at 1.4x instead of 2x. Bottom of the range is sigma = 0
+    // exactly, so uniform sand is reachable rather than merely approached.
+    units: [{ unit: '×', scale: 1 }], min: 1, max: 4,
     toDisplay: (s) => Math.exp(2 * s),
-    fromDisplay: (r) => Math.log(Math.max(r, 1.0001)) / 2,
-    help: 'How mixed the grain sizes are, as the ratio of the coarse quarter to the fine quarter. 1.1x is almost uniform, 2x is washed play sand, 3.7x is unsorted river sand.',
+    fromDisplay: (r) => Math.log(Math.max(r, 1)) / 2,
+    help: 'How mixed the grain sizes are, as the ratio of the coarse quarter to the fine quarter. Turn it fully down to 1.0x and every grain is exactly the median size. 2x is washed play sand, 4x is unsorted river gravel. Note that perfectly uniform spheres pack into regular crystalline patterns, which flattens the pile — some spread is what stops that.',
   },
   {
-    key: 'maxGrainRatio', group: 'Grain', label: 'Grain size cap',
-    units: [{ unit: '× median', scale: 1 }], min: 3, max: 48, log: true,
-    help: 'Hard ceiling on the grain size lottery. Grain sizes have no natural upper limit, so without a cap a long enough pour would eventually draw something absurd. Grains are always solid particles no matter how large, so this only trims the tail — it has nothing to do with clumps. At realistic sorting it almost never fires; this is insurance, not a control.',
+    key: 'minGrainRatio', group: 'Grain', label: 'Smallest grain',
+    units: [{ unit: '× median', scale: 1 }], min: 0.02, max: 0.95, log: true,
+    help: 'Floor on the grain size lottery. Grain sizes are unbounded below as well as above, and very fine grains behave as airborne dust — terminal velocity falls off with size, so a grain a tenth the median falls a tenth as fast and blows out of the domain instead of landing. Raise it to cut the fines, or leave it low to keep them.',
+  },
+  {
+    key: 'maxGrainRatio', group: 'Grain', label: 'Largest grain',
+    units: [{ unit: '× median', scale: 1 }], min: 1.05, max: 48, log: true,
+    help: 'Ceiling on the grain size lottery, which is otherwise unbounded above. Grains are always solid particles no matter how large, so this only trims the tail — it has nothing to do with clumps. Close it and the floor up together for a tightly bounded size range, or leave both wide and let Sorting do the shaping.',
   },
 
   {
@@ -433,5 +455,10 @@ export function enforceConstraints() {
     // A clump that spawns smaller than the smallest allowed clump is a
     // contradiction: it would be born already too small to exist.
     values.minClumpSize = values.clumpSize / 1.5;
+  }
+  if (values.minGrainRatio >= values.maxGrainRatio) {
+    // The size window must stay open, and must contain the median -- otherwise
+    // "median diameter" would name a size that can never be drawn.
+    values.minGrainRatio = Math.min(values.maxGrainRatio / 2, 0.95);
   }
 }
