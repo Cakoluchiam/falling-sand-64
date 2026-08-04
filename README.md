@@ -13,23 +13,43 @@ hexagonal lattice, and the grains are round.
 
 ## Status
 
-Early. Nothing is implemented yet beyond the project scaffolding.
+Early. The first milestone is in: sand is emitted from a nozzle, falls under
+gravity and drag through a divergence-free turbulence field, and lands on a flat
+floor. There is no contact solver yet, so grains stop where they land and
+visibly interpenetrate — that is the next milestone, not a bug.
+
+Not yet implemented: the hex heightfield and its terrain rendering, the contact
+solver, the grain/heightfield mass exchange, and breakable clumps.
 
 ## Running it
 
 There is no build step and there are no dependencies — just ES modules and
-WebGL2. Serve the repository root over HTTP and open `index.html`:
+WebGL2. Serve the repository root and open <http://localhost:8000>:
 
 ```
-python3 -m http.server
+node tools/serve.js
 ```
 
-Then visit http://localhost:8000. A browser with WebGL2 support is required.
+A browser with WebGL2 support is required.
+
+The bundled server exists because the simulation allocates its grain arrays over
+a `SharedArrayBuffer`, which browsers only permit on a cross-origin-isolated
+page. That needs `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`
+response headers, which `python -m http.server` does not send. Any static server
+that sets those two headers works just as well. Without them the page still
+runs — it falls back to a plain `ArrayBuffer`, at no cost on the main thread.
+
+## Controls
+
+Drag to orbit, wheel to zoom, right-drag or shift-drag to pan. Space pauses,
+`s` single-steps, `r` reseeds and restarts. Every parameter is on the panel,
+because the panel is the instrument for the question above.
 
 ## Layout
 
 ```
 index.html      entry point
-src/            simulation and rendering modules
+src/            simulation modules (pure, over flat typed arrays)
 src/gl/         WebGL2 renderer
+tools/serve.js  static dev server that sets COOP/COEP
 ```
