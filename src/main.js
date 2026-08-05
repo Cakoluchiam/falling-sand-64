@@ -77,6 +77,7 @@ class App {
     this.simTime = 0;
     this.accumulator = 0;
     this.lostVolume = 0;
+    this.eatenVolume = 0;
     this.frameIndex = 0;
     this.idleSeconds = 0;
     this.curl.builtAt = -Infinity;
@@ -164,7 +165,7 @@ class App {
 
   integrateBallistic(dt) {
     const P = this.particles;
-    const { px, py, pz, vx, vy, vz, radius, vol, phase, live } = P;
+    const { px, py, pz, vx, vy, vz, radius, vol, phase, live, isAgg } = P;
     const field = this.field;
     const g = values.gravity;
     const dragCoef = derived.dragCoef();
@@ -174,7 +175,7 @@ class App {
     const tmp = this._tmp;
     const halfW = CONFIG.domainWidth / 2;
     const halfD = CONFIG.domainDepth / 2;
-    let lost = 0;
+    let lost = 0, eaten = 0;
 
     // Backwards, because free() swap-removes from the tail of `live`.
     for (let k = P.count - 1; k >= 0; k--) {
@@ -212,6 +213,17 @@ class App {
         py[i] = surf + r;
         vx[i] = 0; vy[i] = 0; vz[i] = 0;
         phase[i] = PHASE_RESTING;
+        // Nothing may come to rest inside a lump. Grains are ballistic right up
+        // to the moment they land, so a clump and the sand around it pass
+        // freely through each other on the way down -- which is correct, and is
+        // why the two streams need not take turns leaving the nozzle. It only
+        // becomes wrong once they stop.
+        if (isAgg[i]) {
+          eaten += P.eatGrainsInside(i);
+        } else if (P.fallingClumpContaining(i) >= 0) {
+          eaten += vol[i];
+          P.free(i);
+        }
         continue;
       }
       if (px[i] < -halfW || px[i] > halfW || pz[i] < -halfD || pz[i] > halfD) {
@@ -220,6 +232,7 @@ class App {
       }
     }
     this.lostVolume += lost;
+    this.eatenVolume += eaten;
   }
 
   fillInstances() {
@@ -296,17 +309,20 @@ class App {
     // grains are counted in, which is exactly why elevation and volume were
     // decoupled. Absorption, emission and fragmentation each get a chance to
     // break this later.
-    const residual = emitted - (grainVol + field.volume + field.escapedVolume + this.lostVolume);
+    const residual = emitted -
+      (grainVol + field.volume + field.escapedVolume + this.lostVolume + this.eatenVolume);
     const rel = emitted > 0 ? Math.abs(residual) / emitted : 0;
     const grams = emitted * SAND_PARTICLE_DENSITY * 1000;
 
     const lines = [
       `${fps.toFixed(0)} fps   ${avg.toFixed(1)} ms   sim ${values.simSpeed.toFixed(2)}x`,
-      `grains ${P.count} / ${P.capacity}   flight ${phases.ballistic}   resting ${phases.resting}`,
+      `grains ${P.count} / ${P.capacity}   flight ${phases.ballistic}   resting ${phases.resting}` +
+        `   lumps ${P.aggCount}`,
       `poured ${grams < 1000 ? grams.toFixed(1) + ' g' : (grams / 1000).toFixed(2) + ' kg'}` +
         `   sim clock ${this.simTime.toFixed(2)} s`,
       `pile peak ${(this.peakHeight() * 100).toFixed(2)} cm` +
         `   buried ${(field.volume * SAND_PARTICLE_DENSITY * 1000).toFixed(1)} g` +
+        `   into lumps ${(this.eatenVolume * SAND_PARTICLE_DENSITY * 1000).toFixed(1)} g` +
         (values.relaxation ? '   SLUMPING' : ''),
       `volume audit ${residual.toExponential(2)}  (${(rel * 100).toFixed(4)}%)`,
     ];

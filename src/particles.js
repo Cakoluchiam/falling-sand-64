@@ -44,16 +44,26 @@ export class Particles {
     this.live = new Int32Array(capacity);   // dense list of live indices
     this.slot = new Int32Array(capacity);   // slot[i] = where i sits in `live`
     this.freeStack = new Int32Array(capacity);
+
+    // Aggregates again, separately. They are rare -- tens of them against
+    // hundreds of thousands of grains -- and everything that has to consider
+    // them one by one would otherwise sweep the whole store to find them. M3's
+    // broad phase wants the same list, for the same reason: a clump is large
+    // enough that it needs its own search radius.
+    this.aggs = new Int32Array(capacity);
+    this.aggSlot = new Int32Array(capacity);
     this.reset();
   }
 
   reset() {
     const n = this.capacity;
     this.count = 0;
+    this.aggCount = 0;
     this.freeTop = n;
     for (let i = 0; i < n; i++) {
       this.freeStack[i] = n - 1 - i;   // pop order 0, 1, 2, ...
       this.slot[i] = -1;
+      this.aggSlot[i] = -1;
       this.phase[i] = PHASE_FREE;
     }
   }
@@ -67,6 +77,14 @@ export class Particles {
     return i;
   }
 
+  // Called after `isAgg` is set, since alloc() runs before the caller knows
+  // what it is making.
+  markAggregate(i) {
+    if (this.aggSlot[i] >= 0) return;
+    this.aggSlot[i] = this.aggCount;
+    this.aggs[this.aggCount++] = i;
+  }
+
   free(i) {
     const s = this.slot[i];
     if (s < 0) return;
@@ -74,6 +92,13 @@ export class Particles {
     this.live[s] = last;
     this.slot[last] = s;
     this.slot[i] = -1;
+    const a = this.aggSlot[i];
+    if (a >= 0) {
+      const lastAgg = this.aggs[--this.aggCount];
+      this.aggs[a] = lastAgg;
+      this.aggSlot[lastAgg] = a;
+      this.aggSlot[i] = -1;
+    }
     this.phase[i] = PHASE_FREE;
     this.freeStack[this.freeTop++] = i;
   }
@@ -84,6 +109,51 @@ export class Particles {
     let sum = 0;
     for (let k = 0; k < this.count; k++) sum += this.vol[this.live[k]];
     return sum;
+  }
+
+  // Index of a lump still in flight whose sphere contains this grain's centre,
+  // or -1. See eatGrainsInside for why "still in flight" is load-bearing.
+  //
+  // Centre-inside rather than spheres-touching, so a grain resting *against* a
+  // lump -- a full radius outside it -- is never caught.
+  fallingClumpContaining(i) {
+    const { px, py, pz, radius, phase, aggs } = this;
+    const x = px[i], y = py[i], z = pz[i];
+    for (let a = 0; a < this.aggCount; a++) {
+      const c = aggs[a];
+      if (phase[c] === PHASE_RESTING) continue;
+      const R = radius[c];
+      const dy = py[c] - y;
+      if (dy > R || dy < -R) continue;   // cheap reject: most lumps are elsewhere
+      const dx = px[c] - x, dz = pz[c] - z;
+      if (dx * dx + dy * dy + dz * dz < R * R) return c;
+    }
+    return -1;
+  }
+
+  // Free every grain whose centre is inside lump `c`, and return their total
+  // volume. A clump's own volume already stands for the grains that stuck
+  // together to make it, so sand travelling with one is double-counted rather
+  // than new -- which is why this does not add to the lump's mass.
+  //
+  // Called when a lump reaches the pile. A clump has something like seventeen
+  // times a grain's terminal velocity, so it outruns the sand it left the
+  // nozzle with and lands on whatever got there first. Rare enough -- tens of
+  // clumps in a pour -- that sweeping the store beats indexing for it.
+  eatGrainsInside(c) {
+    const { px, py, pz, radius, vol, isAgg, live } = this;
+    const R = radius[c], x = px[c], y = py[c], z = pz[c];
+    let eaten = 0;
+    // Backwards, because free() swap-removes from the tail of `live`.
+    for (let k = this.count - 1; k >= 0; k--) {
+      const i = live[k];
+      if (i === c || isAgg[i]) continue;
+      const dx = px[i] - x, dy = py[i] - y, dz = pz[i] - z;
+      if (dx * dx + dy * dy + dz * dz >= R * R) continue;
+      eaten += vol[i];
+      this.free(i);
+    }
+    return eaten;
   }
 
   countByPhase() {
