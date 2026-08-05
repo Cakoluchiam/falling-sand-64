@@ -1,6 +1,6 @@
 # 3D Falling Sand Simulator — v1 Implementation Plan
 
-> ## Plan version 3 — 2026-08-05
+> ## Plan version 4 — 2026-08-05
 >
 > **This tracked file is canonical.** Edit it here. Plan files under `~/.claude/plans/` are created *per planning session*, not per project — entering plan mode a second time mints a new empty file rather than reloading the last one, which is why edits made after an approval never reach the Plan tab. A planning session may copy this file into whatever file it owns, for display only; that copy is downstream.
 >
@@ -13,14 +13,19 @@
 > 4. **Absorption may never engulf a live grain** — a new invariant checked against `grainBottom`.
 > 5. **Dynamic pour direction** (polar picker, swirl) tagged for M6.
 > 6. *(version 3)* Plan and test suites moved into the repository; `CLAUDE.md` added.
+> 7. *(version 4)* **M2 is built.** The relaxation arm's flux rule changed: the threshold is on the **surface gradient**, not on each neighbour's height difference. Two earlier rules are recorded below with the measurements that rejected them.
 >
-> **⛔ M1 complete. M2 approved in principle** — the heightfield, sampling, deposit/debit, terrain rendering, and the relaxation arm. M3 and later remain documented for continuity, not approved.
+> **⛔ M1 and M2 complete. M3 and later remain documented for continuity, not approved.**
 
 ## Where things stand
 
-**Done:** M1, committed through `b5cb594`. This plan, the four test suites, and `CLAUDE.md` are now tracked in the repo rather than living in session-scoped temp directories.
+**Done:** M1 and M2. This plan, the five test suites, and `CLAUDE.md` are tracked in the repo rather than living in session-scoped temp directories.
 
-**Next: M2**, as specified in its section below — hex storage, `sampleTriangle`, the companion arrays, deposit/debit, the terrain renderer, and relaxation as an off-by-default arm. Its acceptance test is **sampling continuity**: walk a probe across cell and triangle boundaries and confirm no seam in height or normal, because that surface is what grain–surface contact will stand on. The round-cone-not-hexagon test still applies, but only to the relaxation arm.
+**M2 as built.** `src/hexfield.js` and `src/gl/terrain.js`, wired into `main.js`. The field is a ledger by default: odd-r storage, one `sampleTriangle` shared by surface sampling and deposition, volume-exact deposit and debit with per-cell size memory, dirty-rect tracking, and six-neighbour normals that the vertex shader reproduces exactly. Grains now land on the sampled surface rather than a hardcoded `y = 0` plane, which is the only thing standing on the field until M3. `src/shared.js` was split out of `particles.js` so both stores allocate over the same feature-detected buffer.
+
+Measured: sampling continuous in height and normal across every cell and triangle boundary; the rendered mesh proven identical to the collision mesh, triangle by triangle, by centroid lookup; volume exact through deposit, debit and relaxation; 73k terrain triangles cost nothing next to 200k grain impostors (1.9 ms for both); the apex of a seeded cone renders to the same pixel the CPU projects it to, which is the end-to-end proof that the `SharedArrayBuffer`-backed height array uploads correctly as `R32F`.
+
+**Next: M3**, the contact solver.
 
 **Outstanding from M1**, neither blocking: the visual checks (grains round at any zoom, stream continuous by eye, sustained 60 fps) need the Browser pane displayed, because `requestAnimationFrame` does not fire while it is hidden — everything verified so far came from driving the loop manually. The dev server is started with `node tools/serve.js` and does not persist across sessions.
 
@@ -177,22 +182,39 @@ The renderer comes first because it is the debugging instrument for everything a
 
 ## M2–M6 — documented for continuity, not approved
 
-### M2 — Heightfield and terrain *(isolates the anisotropy risk)*
+### M2 — Heightfield and terrain *(isolates the anisotropy risk)* — **BUILT**
 
-`src/hexfield.js`, `src/gl/terrain.js`.
+`src/hexfield.js`, `src/gl/terrain.js`, `src/shared.js`, `test/hexfield.mjs`.
 
 **Storage and sampling (the whole default path).** Odd-r offset storage in a `W*H` `Float32Array`; centre `x = s*(q + 0.5*(r&1))`, `z = s*(√3/2)*r`; standard odd-r 6-neighbour tables; adjacent centre distance `s`; cell area `A = (√3/2)·s²`. One `sampleTriangle(x,z)` helper returning 3 cell indices plus barycentric weights summing to 1, used for **both** surface sampling and absorption deposition so they stay consistent and volume-conserving. Companion arrays: `solidVolume`, `logVolSum`, `logVolSqSum`, `absorbCount`, `grainTop`, `grainBottom`. Dirty-rect tracking for the texture upload. Open boundaries. By default the field never moves sand sideways — it is a ledger, and this is all it does.
 
-**Relaxation (the comparison arm, off by default).** Symmetric two-pass gather-then-apply into a scratch delta array (`flux = relaxRate*(dh - tanRepose*s)*0.5`, applied `-flux`/`+flux`) so there is no sweep-order bias and fluxes are antisymmetric by construction; it must move `solidVolume` alongside height. Hysteresis: avalanching begins above `tan(θ_static)` and relaxes to `tan(θ_repose)` with a decaying per-cell flag. `relaxRate` derives from the `slumpHalfLife` slider. Needs its own dirty-cell list, live only while the arm is on.
+**Relaxation (the comparison arm, off by default).** Symmetric two-pass gather-then-apply into a scratch delta array, so there is no sweep-order bias and fluxes are antisymmetric by construction; it moves `solidVolume` and lets height follow, which keeps the two exactly consistent rather than nearly so. Hysteresis: sliding begins above `tan(θ_static)` and continues until `tan(θ_repose)`. `relaxRate` derives from the `slumpHalfLife` slider. Its own active-cell list, allocated lazily so the default path pays nothing.
+
+**⚠ The flux rule is not what this plan first specified, and the two rejected versions are worth keeping** — both look obviously right, and one of them is what any reader would write.
+
+1. *Threshold each neighbour's height difference:* `flux = rate * (|dh| - tanRepose*s) * 0.5`. **Anisotropic**, and measurably: it constrains six directions rather than all of them, so a flank pointing between two neighbours stands at `tan(repose)/cos 30°` before anything fires. Built and measured, a settled spike had a **4.1% six-fold ripple** in its footprint and a **34.1° flank when asked for 32°**. A hexagon would be 15.5%, so this is mild — but it is the lattice printing itself onto pile shape, which is the one thing choosing hex was meant to avoid.
+2. *Transport down the fitted gradient instead:* gate on `|∇h| > tan(repose)` and move sand along `-∇h`, projected onto each pair. Isotropic, and it removed the ripple — but it settled into a **checkerboard with centimetre steps between adjacent cells** while every fitted gradient still read plausibly near the repose angle. The six-neighbour plane fit **cannot see the mode it is creating**: pushing sand at whichever neighbour the smoothed gradient points to, rather than at one that is actually lower, has nothing damping it.
+
+**What works is both halves at once.** Gate on the isotropic quantity and transport by the real one:
+
+- **Gate:** `(|∇h|_c + |∇h|_n)/2 > tan(θ_limit)`, using the same six-neighbour least-squares plane fit as the normals. Whether this patch is over-steep must not depend on which way it faces.
+- **Transport:** the actual pairwise drop, against a threshold scaled by how squarely the pair faces down the slope — `excess = |dh| − tan(θ_limit) · s · |d̂·ĝ|`. A plane of gradient `g` drops `g·s·cos α` to a neighbour `α` off the fall line, so this settles at `|∇h| = tan(θ_limit)` in *every* direction rather than in six. Sand only ever moves from higher to lower, which is what damps the checkerboard.
+- **A donor cap of one seventh per pair.** The gate is on the gradient, so a nearly empty cell beside a tall one carries a large gradient while having nothing to give. Without the cap the shortfall is clamped at apply time, the receiving cell keeps the full amount, and the arm quietly mints sand.
+- **A flux floor of `1e-6 · spacing`.** The flux is proportional to the excess, so a pile approaches its repose angle exponentially and never exactly arrives; without a floor the active set never empties and a visually settled pile keeps a thousand cells awake forever.
+
+Measured after that: **six-fold ripple 0.008%**, worst radial deviation 0.09%, flank **32.02° for 32°** and likewise at 20° and 42°, settling in ~9000 substeps with volume conserved to 1e-12. The profile at 0° and at 30° agree to three decimal places of a centimetre.
 
 **Rendering.** `gl/terrain.js` uploads a static triangular-lattice VBO once, keeps heights in an `R32F` texture refreshed per frame via `texSubImage2D` over the dirty sub-rect only, and displaces vertices in the vertex shader via `texelFetch` of self plus 6 neighbours with an analytic normal — zero per-frame CPU mesh work.
 
-*Verify:*
-- **Volume conservation** through deposit and debit, and separately through relaxation when the arm is on — before equals after.
-- **Sampling is continuous** across cell and triangle boundaries: walk a probe over the field and confirm the returned height and normal have no seams, since this is what grain–surface contact will stand on.
-- **With the relaxation arm on**, seed a spike and relax it: the result must be a **round cone, not a hexagonal pyramid**, and the flank angle must match `θ_repose`. A hex footprint means the flux distribution is leaking lattice anisotropy.
+*Verified, in `test/hexfield.mjs`:*
+- **Volume conservation** through deposit and debit, and separately through relaxation — exact to 1e-12, including deposits that straddle the rim and debits that try to overdraw an empty cell. Sand that spills off the edge under relaxation is booked in `escapedVolume` and the audit closes with it.
+- **Sampling is continuous** across cell and triangle boundaries, in **height and in normal**, checked two ways: an empirical Lipschitz sweep over a deliberately hostile random field, and sharp probes either side of every rhombus diagonal. Both are bounds rather than equalities — a seam moves a finite amount over a 1e-7 m step and reads four orders of magnitude above the bound, while a continuous surface tracks its own gradient. The normal is the **barycentric blend of the three cell normals, not the facet normal**: facet normals step at every triangle edge, which would give a grain rolling over one a sideways kick out of nowhere.
+- **The rendered mesh is the collision mesh.** Every triangle in the terrain index buffer is fed back through `sampleTriangle` as its own centroid and must come back as the same three cells. If these drift apart, grains rest at angles the shading contradicts and it reads as a physics bug.
+- **With the relaxation arm on**, a seeded spike settles to a **round cone, not a hexagonal pyramid**, with the flank at `θ_repose` across the slider range. See the flux-rule note above for the two versions that failed this and by how much.
 
-Note the anisotropy risk this milestone was written to isolate largely **belongs to the relaxation rule**, which is now the optional arm — a toppling rule is what bakes lattice directions into pile shape. What remains by default is the weaker risk that lattice-aligned triangle facets bias where grains settle, and that cannot be tested until there are grain–surface contacts, so it moves to M3.
+Note the anisotropy risk this milestone was written to isolate largely **belongs to the relaxation rule**, which is now the optional arm — a toppling rule is what bakes lattice directions into pile shape. That risk turned out to be real, was measured, and is fixed. What remains by default is the weaker risk that lattice-aligned triangle facets bias where grains settle, and that cannot be tested until there are grain–surface contacts, so it moves to M3.
+
+**Also settled at M2, and in effect now:** `packingFraction` is a live slider rather than a pending one — it is what converts absorbed volume into surface height until M4 replaces it with the observed underside of resting grains. `relaxation` is a new boolean in the Pile group; the three sliders under it drive that arm and nothing else. Height is `Float32` because it is uploaded verbatim as `R32F`; `solidVolume` and the size moments are `Float64` because they are the audit's accumulator and an f32 running sum drifts by ~1e-5 relative over a long pour.
 
 ### M3 — Contact solver
 

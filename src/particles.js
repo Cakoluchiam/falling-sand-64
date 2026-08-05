@@ -14,23 +14,14 @@ export const PHASE_AWAKE = 1;
 export const PHASE_RESTING = 2;
 export const PHASE_FREE = 255;
 
+import { allocBuffer } from './shared.js';
+
 const F32_FIELDS = [
   'px', 'py', 'pz',
   'vx', 'vy', 'vz',
   'vol', 'radius', 'colorSeed', 'restTimer',
 ];
 const U8_FIELDS = ['phase', 'isAgg'];
-
-// SharedArrayBuffer needs cross-origin isolation. It buys nothing on the main
-// thread -- it is identical in speed to ArrayBuffer there -- but allocating
-// over it now means a later worker migration is a scheduling change with no
-// data restructuring. Fall back rather than fail when isolation is absent.
-export const SHARED_MEMORY_AVAILABLE =
-  typeof SharedArrayBuffer !== 'undefined' && globalThis.crossOriginIsolated === true;
-
-function allocBuffer(bytes) {
-  return SHARED_MEMORY_AVAILABLE ? new SharedArrayBuffer(bytes) : new ArrayBuffer(bytes);
-}
 
 export class Particles {
   constructor(capacity) {

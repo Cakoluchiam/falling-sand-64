@@ -13,13 +13,11 @@ hexagonal lattice, and the grains are round.
 
 ## Status
 
-Early. The first milestone is in: sand is emitted from a nozzle, falls under
-gravity and drag through a divergence-free turbulence field, and lands on a flat
-floor. There is no contact solver yet, so grains stop where they land and
-visibly interpenetrate — that is the next milestone, not a bug.
+Early. Sand is emitted from a nozzle, falls under gravity and drag through a divergence-free turbulence field, and lands on the pile surface. That surface is a real hex heightfield now, sampled for collision and drawn as a smooth displaced lattice — but nothing fills it yet, so it starts flat and stays flat during a normal run. There is no contact solver either, so grains stop dead where they land and visibly interpenetrate. Both are the next milestones, not bugs.
 
-Not yet implemented: the hex heightfield and its terrain rendering, the contact
-solver, the grain/heightfield mass exchange, and breakable clumps.
+The surface can slump toward a repose angle, but that is off by default and deliberately so. The point of the project is to find out what shape sand makes; a surface that collapses to a dialed angle mostly hands that angle back. The toggle is there so the two can be compared rather than argued about.
+
+Not yet implemented: the contact solver, the grain/heightfield mass exchange, and breakable clumps.
 
 ## Running it
 
@@ -56,9 +54,10 @@ node test/run.mjs pour       one suite
 No framework and no dependencies. The suites are less about catching crashes
 than about pinning down behaviour that is invisible from the code — that the
 stream's spacing does not change with frame rate, that the size cap does not
-quietly change how often clumps appear, that volume is conserved through every
-path that moves it. Several exist because a reasonable-looking implementation
-had already failed them.
+quietly change how often clumps appear, that the surface a grain stands on has
+no seams in it, that the pile the slump rule builds is round rather than
+hexagonal, that volume is conserved through every path that moves it. Several
+exist because a reasonable-looking implementation had already failed them.
 
 `clumps` takes about two and a half minutes. Clumps are rare, so its tolerances
 only hold when pooled across many seeded runs.
