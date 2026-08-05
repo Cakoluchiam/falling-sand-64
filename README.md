@@ -13,23 +13,64 @@ hexagonal lattice, and the grains are round.
 
 ## Status
 
-Early. Nothing is implemented yet beyond the project scaffolding.
+Early. The first milestone is in: sand is emitted from a nozzle, falls under
+gravity and drag through a divergence-free turbulence field, and lands on a flat
+floor. There is no contact solver yet, so grains stop where they land and
+visibly interpenetrate — that is the next milestone, not a bug.
+
+Not yet implemented: the hex heightfield and its terrain rendering, the contact
+solver, the grain/heightfield mass exchange, and breakable clumps.
 
 ## Running it
 
 There is no build step and there are no dependencies — just ES modules and
-WebGL2. Serve the repository root over HTTP and open `index.html`:
+WebGL2. Serve the repository root and open <http://localhost:8000>:
 
 ```
-python3 -m http.server
+node tools/serve.js
 ```
 
-Then visit http://localhost:8000. A browser with WebGL2 support is required.
+A browser with WebGL2 support is required.
+
+The bundled server exists because the simulation allocates its grain arrays over
+a `SharedArrayBuffer`, which browsers only permit on a cross-origin-isolated
+page. That needs `Cross-Origin-Opener-Policy` and `Cross-Origin-Embedder-Policy`
+response headers, which `python -m http.server` does not send. Any static server
+that sets those two headers works just as well. Without them the page still
+runs — it falls back to a plain `ArrayBuffer`, at no cost on the main thread.
+
+## Controls
+
+Drag to orbit, wheel to zoom, right-drag or shift-drag to pan. Space pauses,
+`s` single-steps, `r` reseeds and restarts. Every parameter is on the panel,
+because the panel is the instrument for the question above. Hover any control
+for a description; the ones whose milestone is not built yet are dimmed.
+
+## Tests
+
+```
+node test/run.mjs            all suites
+node test/run.mjs pour       one suite
+```
+
+No framework and no dependencies. The suites are less about catching crashes
+than about pinning down behaviour that is invisible from the code — that the
+stream's spacing does not change with frame rate, that the size cap does not
+quietly change how often clumps appear, that volume is conserved through every
+path that moves it. Several exist because a reasonable-looking implementation
+had already failed them.
+
+`clumps` takes about two and a half minutes. Clumps are rare, so its tolerances
+only hold when pooled across many seeded runs.
 
 ## Layout
 
 ```
 index.html      entry point
-src/            simulation and rendering modules
+src/            simulation modules (pure, over flat typed arrays)
 src/gl/         WebGL2 renderer
+test/           behavioural suites, run with test/run.mjs
+tools/serve.js  static dev server that sets COOP/COEP
+PLAN.md         design record: decisions, and why the alternatives were wrong
+CLAUDE.md       conventions for working in this repo
 ```

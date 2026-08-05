@@ -1,0 +1,130 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Falling Sand 64</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #16181c;
+    --panel: #1e2127;
+    --line: #2c3038;
+    --text: #d6d9de;
+    --dim: #8b929d;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font: 13px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    display: flex;
+    overflow: hidden;
+  }
+
+  #stage { position: relative; flex: 1 1 auto; min-width: 0; }
+  #canvas { display: block; width: 100%; height: 100%; touch-action: none; cursor: grab; }
+  #canvas:active { cursor: grabbing; }
+
+  #hud {
+    position: absolute; top: 10px; left: 12px;
+    margin: 0;
+    font: 11px/1.5 ui-monospace, "Cascadia Mono", Consolas, monospace;
+    color: var(--dim);
+    white-space: pre;
+    pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.8);
+  }
+
+  #panel {
+    flex: 0 0 264px;
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    padding: 10px 12px 24px;
+    overflow-y: auto;
+  }
+  #panel header { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  #panel h1 { font-size: 13px; margin: 0; font-weight: 600; }
+  #panel button {
+    margin-left: auto;
+    background: #2b3038; color: var(--text);
+    border: 1px solid var(--line); border-radius: 4px;
+    padding: 3px 9px; font: inherit; font-size: 11px; cursor: pointer;
+  }
+  #panel button:hover { background: #353b45; }
+
+  .hint { margin: 2px 0 0; font-size: 10px; color: var(--dim); }
+
+  .group { margin-top: 14px; }
+  .group h2 {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .09em;
+    color: var(--dim); margin: 0 0 6px; font-weight: 600;
+  }
+  .row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    align-items: baseline;
+    gap: 1px 6px;
+    margin-bottom: 7px;
+  }
+  .row label { color: var(--text); font-size: 11px; }
+  .row[title] label { cursor: help; text-decoration: underline dotted rgba(255,255,255,.22); text-underline-offset: 3px; }
+  .row[title]:hover label { text-decoration-color: rgba(160,190,255,.7); }
+  /* Controls whose milestone is not built yet, so the panel does not imply
+     they currently do anything. */
+  .row.pending { opacity: .45; }
+  .row.pending label::after {
+    content: ' · soon';
+    font-size: 9px;
+    letter-spacing: .04em;
+    color: var(--dim);
+  }
+  .row .value {
+    font: 11px ui-monospace, Consolas, monospace;
+    color: #e6e9ee; text-align: right;
+  }
+  .row .unit {
+    font: 10px ui-monospace, Consolas, monospace;
+    color: var(--dim);
+    background: none; border: 0; padding: 0 0 0 1px;
+    min-width: 3.6em; text-align: left;
+    cursor: pointer;
+  }
+  .row .unit.fixed { cursor: default; }
+  .row .unit:not(.fixed):hover { color: #7fb2ff; text-decoration: underline dotted; }
+  .row input[type=range] { grid-column: 1 / -1; width: 100%; height: 16px; margin: 1px 0 0; }
+  .row input[type=checkbox] { grid-column: 2 / -1; justify-self: end; }
+
+  .derived pre {
+    margin: 0;
+    font: 10px/1.6 ui-monospace, Consolas, monospace;
+    color: var(--dim);
+    white-space: pre-wrap;
+  }
+
+  #error {
+    position: absolute; inset: 0;
+    display: flex; flex-direction: column; justify-content: center;
+    padding: 0 12%;
+  }
+  #error h1 { font-size: 18px; margin: 0 0 8px; }
+  #error p { color: var(--dim); margin: 0; max-width: 60ch; }
+</style>
+
+<div id="stage">
+  <canvas id="canvas"></canvas>
+  <pre id="hud"></pre>
+  <div id="error" hidden>
+    <h1></h1>
+    <p></p>
+  </div>
+</div>
+
+<aside id="panel">
+  <header>
+    <h1>Falling Sand 64</h1>
+    <button id="reset" type="button">Reset</button>
+  </header>
+  <p class="hint">Hover any control for what it does.</p>
+</aside>
+
+<script type="module" src="./src/main.js"></script>
