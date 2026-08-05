@@ -43,7 +43,25 @@ runs — it falls back to a plain `ArrayBuffer`, at no cost on the main thread.
 
 Drag to orbit, wheel to zoom, right-drag or shift-drag to pan. Space pauses,
 `s` single-steps, `r` reseeds and restarts. Every parameter is on the panel,
-because the panel is the instrument for the question above.
+because the panel is the instrument for the question above. Hover any control
+for a description; the ones whose milestone is not built yet are dimmed.
+
+## Tests
+
+```
+node test/run.mjs            all suites
+node test/run.mjs pour       one suite
+```
+
+No framework and no dependencies. The suites are less about catching crashes
+than about pinning down behaviour that is invisible from the code — that the
+stream's spacing does not change with frame rate, that the size cap does not
+quietly change how often clumps appear, that volume is conserved through every
+path that moves it. Several exist because a reasonable-looking implementation
+had already failed them.
+
+`clumps` takes about two and a half minutes. Clumps are rare, so its tolerances
+only hold when pooled across many seeded runs.
 
 ## Layout
 
@@ -51,5 +69,8 @@ because the panel is the instrument for the question above.
 index.html      entry point
 src/            simulation modules (pure, over flat typed arrays)
 src/gl/         WebGL2 renderer
+test/           behavioural suites, run with test/run.mjs
 tools/serve.js  static dev server that sets COOP/COEP
+PLAN.md         design record: decisions, and why the alternatives were wrong
+CLAUDE.md       conventions for working in this repo
 ```
