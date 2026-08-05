@@ -83,6 +83,21 @@ export const values = {
   apertureRadius: 0.02,
   nozzleHeight: 0.5,
   initialSpeed: 0.4,
+  // Sand is turbulent while it is being poured, not only while it falls. Grains
+  // shed off a lip or squeeze past each other in the orifice and leave with
+  // real sideways velocity, so the stream diverges instead of falling as a
+  // cylinder. Without this the stream stays exactly as wide as the aperture all
+  // the way down, which makes a clump look enormous: it holds the same
+  // fraction of the stream at the floor as it did at the nozzle.
+  //
+  // Two separate things. `pourAngle` tilts the whole stream off vertical in one
+  // fixed direction, the way tipping a bucket sends sand a particular way, and
+  // moves where the pile builds. `pourSpread` is how far individual grains
+  // scatter about that axis, and it is what actually makes the stream diverge.
+  // Divergence comes from the spread, not the tilt, so the default is a
+  // straight-down pour that still fans out.
+  pourAngle: 0,
+  pourSpread: 8,
   surgePeriod: 0.6,
   surgeDepth: 0.5,
   continuousPour: true,
@@ -209,6 +224,38 @@ export const derived = {
   minGrainDiameter() {
     return values.minGrainRatio * values.medianDiameter;
   },
+  // Rough width of the stream where it lands, ignoring drag and turbulence.
+  // Enough to answer "is a clump a big fraction of the stream or a small one",
+  // which is the question the pour angle exists to change.
+  //
+  // The aperture offset and the sideways throw are independent and point in
+  // independent directions, so they combine in quadrature, not by adding.
+  // Adding them overstates the width by 44% at small angles, where the aperture
+  // still dominates. Quoted as an RMS diameter: the aperture contributes
+  // R/sqrt(2), the RMS radius of a uniformly filled disc.
+  landingSpread() {
+    const g = values.gravity, h = values.nozzleHeight, v0 = values.initialSpeed;
+    const t = (Math.sqrt(v0 * v0 + 2 * g * h) - v0) / g;
+    // Only the scatter widens the stream. The pour angle aims it, moving where
+    // the pile lands without changing how broad it is.
+    //
+    // The scatter is two independent gaussians in the tangent plane, so its RMS
+    // magnitude is sigma*sqrt(2), not sigma -- omitting that understates the
+    // width by 22%. The second step converts the tangent offset back to an
+    // actual angle, which matters once the spread is wide.
+    const tangent = Math.tan(Math.min(values.pourSpread, 80) * Math.PI / 180) * Math.SQRT2;
+    const sinAngle = tangent / Math.sqrt(1 + tangent * tangent);
+    const scatter = v0 * sinAngle * t;
+    const fromAperture = values.apertureRadius / Math.SQRT2;
+    return 2 * Math.hypot(fromAperture, scatter);
+  },
+  // How far downrange a tilted pour puts the pile, measured from directly under
+  // the nozzle.
+  landingOffset() {
+    const g = values.gravity, h = values.nozzleHeight, v0 = values.initialSpeed;
+    const t = (Math.sqrt(v0 * v0 + 2 * g * h) - v0) / g;
+    return v0 * Math.sin(Math.min(values.pourAngle, 85) * Math.PI / 180) * t;
+  },
   clumpMetres() {
     return values.clumpSize * values.medianDiameter;
   },
@@ -295,7 +342,17 @@ export const SCHEMA = [
   {
     key: 'initialSpeed', group: 'Source', label: 'Initial speed',
     units: [{ unit: 'm/s', scale: 1 }], min: 0.04, max: 4, log: true, logZero: true,
-    help: 'Downward speed the sand already carries as it leaves the nozzle, before gravity adds any.',
+    help: 'Speed the sand already carries as it leaves the nozzle, before gravity adds any. Pour angle tilts this away from straight down without changing how fast it is going.',
+  },
+  {
+    key: 'pourAngle', group: 'Source', label: 'Pour angle',
+    units: [{ unit: '° off vertical', scale: 1 }], min: 0, max: 60,
+    help: 'Tilts the whole stream off vertical, in one fixed direction, the way tipping a bucket throws sand a particular way rather than straight down. This aims the stream and moves where the pile builds; it does not make the stream any wider — that is Pour spread. Orbit the camera to see it from the side.',
+  },
+  {
+    key: 'pourSpread', group: 'Source', label: 'Pour spread',
+    units: [{ unit: '°', scale: 1 }], min: 1, max: 45, log: true, logZero: true,
+    help: 'How far individual grains scatter about the pour direction. This is what makes the stream fan out. Real sand is turbulent while it is being poured, not only while it falls — grains shed off the lip and shove past each other in the opening. At 0 the stream is a perfect cylinder that stays exactly as wide as the aperture the whole way down, which is what makes a clump look enormous: it covers the same fraction of the stream where it lands as it did at the nozzle. The Derived panel shows how wide the stream lands and how much of it a clump covers.',
   },
   {
     key: 'surgePeriod', group: 'Source', label: 'Surge period',

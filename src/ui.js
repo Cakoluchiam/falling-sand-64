@@ -170,8 +170,18 @@ export function buildPanel(container, schema, vals, onChange) {
       ? 'off'
       : perSec >= 1 ? `${perSec.toFixed(1)}/s` : `one every ${(1 / perSec).toFixed(1)} s`;
 
+    // How wide the stream lands, and how much of it one clump covers. This is
+    // the number that says whether a clump will read as a lump in a stream or
+    // as a boulder filling it.
+    const spread = derived.landingSpread();
+    const clumpShare = (derived.clumpMetres() / spread) * 100;
+    const offset = derived.landingOffset();
+
     dpre.textContent = [
       `grains     ${grainRange}`,
+      `stream     ${format(values.apertureRadius * 200)} → ${format(spread * 100)} cm wide at the floor`,
+      `           a clump covers ${clumpShare < 100 ? clumpShare.toFixed(0) : '>99'}% of it`,
+      ...(offset > 1e-4 ? [`lands      ${format(offset * 100)} cm downrange`] : []),
       `clump      ${format(derived.clumpMetres() * 1000)} mm, ${format(clumpMass)} g`,
       `           ${format(derived.clumpGrains())} grains of sand each`,
       `rate       ${rate}`,

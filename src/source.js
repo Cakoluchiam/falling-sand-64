@@ -9,6 +9,10 @@ const PI_6 = Math.PI / 6;
 // borrowed. Below 1 so the stream always keeps flowing behind a clump.
 const ARREARS_RATE = 0.5;
 
+// Floor on how downward a launch direction must be, so a wide scatter draw
+// cannot send a grain up out of the nozzle. sin(5 degrees).
+const MIN_DOWNWARD = Math.sin(5 * Math.PI / 180);
+
 export class Nozzle {
   constructor(rng, noise) {
     this.rng = rng;
@@ -158,7 +162,14 @@ export class Nozzle {
     const ctx = {
       g: v.gravity,
       y0: v.nozzleHeight,
-      vy0: -v.initialSpeed,
+      speed: v.initialSpeed,
+      // Stream axis: vertical tilted by pourAngle toward +x. One fixed
+      // direction for the whole pour, not a per-grain bearing.
+      axisSin: Math.sin(Math.min(v.pourAngle, 85) * Math.PI / 180),
+      axisCos: Math.cos(Math.min(v.pourAngle, 85) * Math.PI / 180),
+      // Tangent-plane scale for the per-grain scatter. tan() so the parameter
+      // reads as the angle it actually produces.
+      spreadTan: v.pourSpread > 0 ? Math.tan(Math.min(v.pourSpread, 80) * Math.PI / 180) : 0,
       clumpPack: Math.max(v.packingFraction, 0.05),
       budget,
       dt,
@@ -231,13 +242,42 @@ export class Nozzle {
     const frac = Math.min(ctx.consumed / ctx.budget, 1);
     const delta = (1 - frac) * ctx.dt;
 
+    // Launch direction. The stream axis is fixed -- vertical tilted by the pour
+    // angle toward +x -- and each grain scatters off it in its own random
+    // direction. Speed is preserved and only the direction changes: a grain
+    // shoved sideways in the orifice is redirected, not accelerated.
+    //
+    // The scatter is a pair of independent gaussians in the plane perpendicular
+    // to the axis, which is uniformly random in bearing about that axis without
+    // needing to draw one, and fills the cone rather than leaving a hollow ring
+    // the way a fixed scatter angle would. Normalising afterwards maps the
+    // tangent plane onto the sphere, so even a large draw bends toward
+    // horizontal instead of flipping past it.
+    let dx = ctx.axisSin, dy = -ctx.axisCos, dz = 0;
+    if (ctx.spreadTan > 0) {
+      const su = ctx.spreadTan * this.rng.gaussian();
+      const sw = ctx.spreadTan * this.rng.gaussian();
+      // Orthonormal basis perpendicular to the axis.
+      // u lies in the xy-plane, w is the z axis.
+      dx += ctx.axisCos * su;
+      dy += ctx.axisSin * su;
+      dz += sw;
+      // Never launch upward, or level enough to leave the domain before landing.
+      if (dy > -MIN_DOWNWARD) dy = -MIN_DOWNWARD;
+      const len = Math.hypot(dx, dy, dz) || 1;
+      dx /= len; dy /= len; dz /= len;
+    }
+    const vx0 = ctx.speed * dx, vy0 = ctx.speed * dy, vz0 = ctx.speed * dz;
+
+    // Backdating has to move all three axes now. Only gravity is left out of
+    // the horizontal, which is exact -- it has no horizontal component.
     const [ox, oz] = this.rng.disc(v.apertureRadius);
-    particles.px[i] = ox;
-    particles.py[i] = ctx.y0 + ctx.vy0 * delta - 0.5 * ctx.g * delta * delta;
-    particles.pz[i] = oz;
-    particles.vx[i] = 0;
-    particles.vy[i] = ctx.vy0 - ctx.g * delta;
-    particles.vz[i] = 0;
+    particles.px[i] = ox + vx0 * delta;
+    particles.py[i] = ctx.y0 + vy0 * delta - 0.5 * ctx.g * delta * delta;
+    particles.pz[i] = oz + vz0 * delta;
+    particles.vx[i] = vx0;
+    particles.vy[i] = vy0 - ctx.g * delta;
+    particles.vz[i] = vz0;
 
     // Solid-equivalent diameter; a clump is then drawn larger because it is
     // porous, which is also what makes its fragments fit inside it later.
