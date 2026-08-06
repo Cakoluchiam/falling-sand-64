@@ -6,6 +6,7 @@ import { Noise, CurlField } from './noise.js';
 import { SHARED_MEMORY_AVAILABLE } from './shared.js';
 import { Particles, PHASE_RESTING } from './particles.js';
 import { Nozzle } from './source.js';
+import { stepBallistic } from './ballistic.js';
 import { HexField, relaxRateFromHalfLife } from './hexfield.js';
 import { initGL, GLUnavailableError, resizeToDisplay } from './gl/context.js';
 import { OrbitCamera } from './gl/camera.js';
@@ -164,73 +165,15 @@ class App {
   }
 
   integrateBallistic(dt) {
-    const P = this.particles;
-    const { px, py, pz, vx, vy, vz, radius, vol, phase, live, isAgg } = P;
-    const field = this.field;
-    const g = values.gravity;
-    const dragCoef = derived.dragCoef();
-    const amp = values.turbAmplitude;
-    const useTurb = amp > 0;
-    const curl = this.curl;
-    const tmp = this._tmp;
-    const halfW = CONFIG.domainWidth / 2;
-    const halfD = CONFIG.domainDepth / 2;
-    let lost = 0, eaten = 0;
-
-    // Backwards, because free() swap-removes from the tail of `live`.
-    for (let k = P.count - 1; k >= 0; k--) {
-      const i = live[k];
-      if (phase[i] === PHASE_RESTING) continue;
-
-      let fx = 0, fy = 0, fz = 0;
-      if (useTurb) {
-        curl.sample(px[i], py[i], pz[i], tmp);
-        fx = tmp[0] * amp; fy = tmp[1] * amp; fz = tmp[2] * amp;
-      }
-
-      // Drag is solved implicitly so it cannot go unstable for fine grains,
-      // where the coefficient over radius gets large. The 1/r is what makes
-      // size matter: fine grains are strongly deflected by the turbulence,
-      // clumps punch through it.
-      const kr = dragCoef / radius[i];
-      const denom = 1 / (1 + dt * kr);
-      const nvx = (vx[i] + dt * kr * fx) * denom;
-      const nvy = (vy[i] + dt * (kr * fy - g)) * denom;
-      const nvz = (vz[i] + dt * kr * fz) * denom;
-
-      vx[i] = nvx; vy[i] = nvy; vz[i] = nvz;
-      px[i] += nvx * dt;
-      py[i] += nvy * dt;
-      pz[i] += nvz * dt;
-
-      const r = radius[i];
-      // The surface is sampled rather than assumed flat, which is the only
-      // thing standing on the heightfield until M3 builds the contact solver.
-      // Grains still stop dead where they meet it and will visibly
-      // interpenetrate each other; that is the motivation for M3, not a bug.
-      const surf = field.heightAt(px[i], pz[i]);
-      if (py[i] - r <= surf) {
-        py[i] = surf + r;
-        vx[i] = 0; vy[i] = 0; vz[i] = 0;
-        phase[i] = PHASE_RESTING;
-        // Nothing may come to rest inside a lump. Grains are ballistic right up
-        // to the moment they land, so a clump and the sand around it pass
-        // freely through each other on the way down -- which is correct, and is
-        // why the two streams need not take turns leaving the nozzle. It only
-        // becomes wrong once they stop.
-        if (isAgg[i]) {
-          eaten += P.eatGrainsInside(i);
-        } else if (P.fallingClumpContaining(i) >= 0) {
-          eaten += vol[i];
-          P.free(i);
-        }
-        continue;
-      }
-      if (px[i] < -halfW || px[i] > halfW || pz[i] < -halfD || pz[i] > halfD) {
-        lost += vol[i];
-        P.free(i);
-      }
-    }
+    const { lost, eaten } = stepBallistic(this.particles, this.field, dt, {
+      gravity: values.gravity,
+      dragCoef: derived.dragCoef(),
+      turbAmplitude: values.turbAmplitude,
+      curl: this.curl,
+      halfW: CONFIG.domainWidth / 2,
+      halfD: CONFIG.domainDepth / 2,
+      tmp: this._tmp,
+    });
     this.lostVolume += lost;
     this.eatenVolume += eaten;
   }

@@ -82,6 +82,10 @@ export const values = {
   // Solid volume per second. 1.509e-4 m^3/s = 400 g/s = a 4 kg bucket in 10 s.
   flowRate: 400 / (SAND_PARTICLE_DENSITY * 1000),
   apertureRadius: 0.02,
+  // A flat opening the sand passes through, versus a source with volume. The
+  // disc is the cleaner instrument -- one knob, one effect -- so it is the
+  // default; see the note in Nozzle._spawn for how they differ.
+  apertureBall: false,
   nozzleHeight: 0.5,
   initialSpeed: 0.4,
   // Sand is turbulent while it is being poured, not only while it falls. Grains
@@ -256,7 +260,11 @@ export const derived = {
     const tangent = Math.tan(Math.min(values.pourSpread, 80) * Math.PI / 180) * Math.SQRT2;
     const sinAngle = tangent / Math.sqrt(1 + tangent * tangent);
     const scatter = v0 * sinAngle * t;
-    const fromAperture = values.apertureRadius / Math.SQRT2;
+    // RMS distance from the axis. A uniform disc gives R/sqrt(2); a uniform
+    // ball spreads a third of its variance along the flow instead, leaving
+    // R*sqrt(2/5) across it, so the same slider makes a 12% narrower stream.
+    const fromAperture = values.apertureRadius *
+      (values.apertureBall ? Math.sqrt(0.4) : 1 / Math.SQRT2);
     return 2 * Math.hypot(fromAperture, scatter);
   },
   // How far downrange a tilted pour puts the pile, measured from directly under
@@ -347,7 +355,11 @@ export const SCHEMA = [
   {
     key: 'apertureRadius', group: 'Source', label: 'Aperture radius',
     units: [{ unit: 'cm', scale: 100 }], min: 0.2, max: 20, log: true,
-    help: 'Radius of the opening the sand falls through. The stream off a tipped bucket lip is roughly 2 cm.',
+    help: 'Radius of the opening the sand falls through. The stream off a tipped bucket lip is roughly 2 cm. The opening turns to face the pour direction, so tilting the pour does not squash it.',
+  },
+  {
+    key: 'apertureBall', group: 'Source', label: 'Ball-shaped aperture', type: 'bool',
+    help: 'Release the sand from throughout a ball the size of the aperture, instead of across a flat opening. Two things change. Sand comes out thickest down the middle and thins toward the edge, where a flat opening releases it evenly across its whole width — so the stream is centre-heavy and lands about 12% narrower for the same setting. And the source gains depth along the flow, meaning the aperture slider now sets how far the sand is smeared lengthwise as well as how wide it is, which is worth knowing before reading a sweep of it.',
   },
   {
     key: 'nozzleHeight', group: 'Source', label: 'Pour height',

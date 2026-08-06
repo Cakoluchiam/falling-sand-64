@@ -116,6 +116,22 @@ export class Rng {
     return [r * Math.cos(t), r * Math.sin(t)];
   }
 
+  // Point uniformly distributed inside a ball of the given radius. The cube
+  // root keeps it uniform by volume rather than crowding the centre, the same
+  // correction the square root makes for the disc. Direction from a uniform z:
+  // equal area per band of latitude, which sampling an angle directly does not
+  // give -- that clusters at the poles.
+  ball(radius, out = [0, 0, 0]) {
+    const r = radius * Math.cbrt(this.next());
+    const z = 2 * this.next() - 1;
+    const t = 2 * Math.PI * this.next();
+    const s = Math.sqrt(Math.max(0, 1 - z * z));
+    out[0] = r * s * Math.cos(t);
+    out[1] = r * z;
+    out[2] = r * s * Math.sin(t);
+    return out;
+  }
+
   // Gamma deviate, Marsaglia-Tsang. Exists only to build dirichlet() below.
   gamma(k) {
     // The method needs k >= 1; boost a smaller shape and correct for it.

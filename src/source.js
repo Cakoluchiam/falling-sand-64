@@ -35,6 +35,7 @@ export class Nozzle {
     }
     this._cachedK = NaN;
     this._meanFactor = 1;
+    this._ball = [0, 0, 0];
   }
 
   _normaliser(k) {
@@ -254,11 +255,34 @@ export class Nozzle {
     }
     const vx0 = ctx.speed * dx, vy0 = ctx.speed * dy, vz0 = ctx.speed * dz;
 
+    // Where in the aperture this body starts.
+    //
+    // The disc is **square to the stream axis**, so tipping the pour tips the
+    // nozzle mouth with it, the way a bucket lip turns to face where it is
+    // throwing. Held horizontal instead -- which is what it was, because the
+    // pour angle arrived after the aperture did -- a tilted stream gets cut
+    // obliquely and its cross-section squashes by cos(angle), a factor of two
+    // at 60 degrees. At zero tilt the two are identical.
+    //
+    // The ball has no orientation to get wrong, being isotropic, but it is not
+    // the same source: projected onto the perpendicular plane its density goes
+    // as the chord, so it is peaked at the centre where the disc is flat, and
+    // it gives the source depth along the flow as well.
+    let ox, oy, oz;
+    if (v.apertureBall) {
+      const b = this.rng.ball(v.apertureRadius, this._ball);
+      ox = b[0]; oy = b[1]; oz = b[2];
+    } else {
+      // u lies in the xy-plane and w is the z axis -- the same perpendicular
+      // basis the scatter above uses.
+      const [ou, ow] = this.rng.disc(v.apertureRadius);
+      ox = ou * ctx.axisCos; oy = ou * ctx.axisSin; oz = ow;
+    }
+
     // Backdating has to move all three axes now. Only gravity is left out of
     // the horizontal, which is exact -- it has no horizontal component.
-    const [ox, oz] = this.rng.disc(v.apertureRadius);
     particles.px[i] = ox + vx0 * delta;
-    particles.py[i] = ctx.y0 + vy0 * delta - 0.5 * ctx.g * delta * delta;
+    particles.py[i] = ctx.y0 + oy + vy0 * delta - 0.5 * ctx.g * delta * delta;
     particles.pz[i] = oz + vz0 * delta;
     particles.vx[i] = vx0;
     particles.vy[i] = vy0 - ctx.g * delta;
