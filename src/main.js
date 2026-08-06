@@ -3,12 +3,18 @@
 import { CONFIG, values, derived, SCHEMA, domainBounds, enforceConstraints, SAND_PARTICLE_DENSITY } from './params.js';
 import { Rng } from './rng.js';
 import { Noise, CurlField } from './noise.js';
-import { Particles, PHASE_RESTING, SHARED_MEMORY_AVAILABLE } from './particles.js';
+import { SHARED_MEMORY_AVAILABLE } from './shared.js';
+import { Particles, PHASE_RESTING } from './particles.js';
 import { Nozzle } from './source.js';
+import { stepBallistic } from './ballistic.js';
+import { HexField, relaxRateFromHalfLife } from './hexfield.js';
 import { initGL, GLUnavailableError, resizeToDisplay } from './gl/context.js';
 import { OrbitCamera } from './gl/camera.js';
 import { GrainRenderer, INSTANCE_FLOATS } from './gl/grains.js';
+import { TerrainRenderer } from './gl/terrain.js';
 import { buildPanel } from './ui.js';
+
+const DEG = Math.PI / 180;
 
 const LIGHT_DIR = (() => {
   const d = new Float32Array([0.45, 0.82, 0.35]);
@@ -40,7 +46,10 @@ class App {
     });
 
     this.particles = new Particles(CONFIG.grainCapacity);
+    this.field = new HexField(CONFIG.gridW, CONFIG.gridH, CONFIG.cellSpacing);
     this.renderer = new GrainRenderer(gl, CONFIG.grainCapacity);
+    this.terrain = new TerrainRenderer(gl, this.field);
+    this._surf = new Float64Array(4);
 
     this.rng = new Rng(values.seed);
     this.noise = new Noise(values.seed);
@@ -64,10 +73,12 @@ class App {
     this.rng.reseed(values.seed);
     this.noise.reseed(values.seed);
     this.particles.reset();
+    this.field.reset();
     this.nozzle.reset();
     this.simTime = 0;
     this.accumulator = 0;
     this.lostVolume = 0;
+    this.eatenVolume = 0;
     this.frameIndex = 0;
     this.idleSeconds = 0;
     this.curl.builtAt = -Infinity;
@@ -77,7 +88,19 @@ class App {
   // so the timing machinery -- including degrading to slow motion under
   // overload rather than freezing -- is verified before the expensive thing
   // goes inside it.
-  substep(_h) {}
+  //
+  // The relaxation arm runs here rather than per frame because its step is an
+  // explicit one: at the short end of the half-life slider a 1/60 s step
+  // overshoots and rings, where 1/240 s does not.
+  substep(h) {
+    if (!values.relaxation) return;
+    this.field.relax(
+      h,
+      Math.tan(values.reposeAngle * DEG),
+      Math.tan(derived.staticAngle() * DEG),
+      relaxRateFromHalfLife(values.slumpHalfLife),
+    );
+  }
 
   // Nothing left to watch: everything has landed and no more sand can come out,
   // either because the store is full or the pour has finished.
@@ -94,6 +117,7 @@ class App {
 
   simulate(rawDt) {
     const h = 1 / CONFIG.substepHz;
+    this.field.packingFraction = values.packingFraction;
     this.accumulator += rawDt;
     const start = performance.now();
     let steps = 0;
@@ -133,7 +157,7 @@ class App {
       // ones already backdated to step end. Emitting first would integrate the
       // new grains a second time and double-count their fall.
       this.integrateBallistic(step);
-      this.nozzle.step(step, this.simTime, this.particles, values);
+      this.nozzle.step(step, this.simTime, this.particles, values, this.curl);
       remaining -= step;
       iters++;
     }
@@ -141,59 +165,17 @@ class App {
   }
 
   integrateBallistic(dt) {
-    const P = this.particles;
-    const { px, py, pz, vx, vy, vz, radius, vol, phase, live } = P;
-    const g = values.gravity;
-    const dragCoef = derived.dragCoef();
-    const amp = values.turbAmplitude;
-    const useTurb = amp > 0;
-    const curl = this.curl;
-    const tmp = this._tmp;
-    const halfW = CONFIG.domainWidth / 2;
-    const halfD = CONFIG.domainDepth / 2;
-    let lost = 0;
-
-    // Backwards, because free() swap-removes from the tail of `live`.
-    for (let k = P.count - 1; k >= 0; k--) {
-      const i = live[k];
-      if (phase[i] === PHASE_RESTING) continue;
-
-      let fx = 0, fy = 0, fz = 0;
-      if (useTurb) {
-        curl.sample(px[i], py[i], pz[i], tmp);
-        fx = tmp[0] * amp; fy = tmp[1] * amp; fz = tmp[2] * amp;
-      }
-
-      // Drag is solved implicitly so it cannot go unstable for fine grains,
-      // where the coefficient over radius gets large. The 1/r is what makes
-      // size matter: fine grains are strongly deflected by the turbulence,
-      // clumps punch through it.
-      const kr = dragCoef / radius[i];
-      const denom = 1 / (1 + dt * kr);
-      const nvx = (vx[i] + dt * kr * fx) * denom;
-      const nvy = (vy[i] + dt * (kr * fy - g)) * denom;
-      const nvz = (vz[i] + dt * kr * fz) * denom;
-
-      vx[i] = nvx; vy[i] = nvy; vz[i] = nvz;
-      px[i] += nvx * dt;
-      py[i] += nvy * dt;
-      pz[i] += nvz * dt;
-
-      const r = radius[i];
-      if (py[i] - r <= 0) {
-        // M1 has no contact solver, so grains stop dead on the floor and will
-        // visibly interpenetrate. That is the motivation for M3, not a bug.
-        py[i] = r;
-        vx[i] = 0; vy[i] = 0; vz[i] = 0;
-        phase[i] = PHASE_RESTING;
-        continue;
-      }
-      if (px[i] < -halfW || px[i] > halfW || pz[i] < -halfD || pz[i] > halfD) {
-        lost += vol[i];
-        P.free(i);
-      }
-    }
+    const { lost, eaten } = stepBallistic(this.particles, this.field, dt, {
+      gravity: values.gravity,
+      dragCoef: derived.dragCoef(),
+      turbAmplitude: values.turbAmplitude,
+      curl: this.curl,
+      halfW: CONFIG.domainWidth / 2,
+      halfD: CONFIG.domainDepth / 2,
+      tmp: this._tmp,
+    });
     this.lostVolume += lost;
+    this.eatenVolume += eaten;
   }
 
   fillInstances() {
@@ -218,11 +200,38 @@ class App {
     resizeToDisplay(gl, this.canvas);
     this.camera.update(this.canvas.width / this.canvas.height);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+    this.terrain.draw(this.camera, { lightDir: LIGHT_DIR });
     const n = this.fillInstances();
     this.renderer.draw(this.camera, n, {
       lightDir: LIGHT_DIR,
       medianRadius: values.medianDiameter * 0.5,
     });
+  }
+
+  peakHeight() {
+    const h = this.field.height;
+    let m = 0;
+    for (let c = 0; c < h.length; c++) if (h[c] > m) m = h[c];
+    return m;
+  }
+
+  // Absorption is M4, so nothing puts sand into the heightfield during a normal
+  // run and the terrain stays flat. This drops a cone into it directly so the
+  // surface, its shading and the relaxation arm can be looked at now. It is a
+  // console tool, not a feature: the volume it invents was never poured, so it
+  // deliberately shows up in the audit as a discrepancy.
+  seedCone(peak = 0.06, radius = 0.08) {
+    const f = this.field;
+    for (let r = 0; r < f.H; r++) {
+      for (let q = 0; q < f.W; q++) {
+        const dx = f.cellX(q, r), dz = f.cellZ(r);
+        const d = Math.hypot(dx, dz);
+        if (d >= radius) continue;
+        const height = peak * (1 - d / radius);
+        f.deposit(dx, dz, height * f.cellArea * f.packingFraction);
+      }
+    }
+    return f.volume;
   }
 
   updateHud(now) {
@@ -236,19 +245,28 @@ class App {
     const P = this.particles;
     const phases = P.countByPhase();
     const grainVol = P.totalVolume();
+    const field = this.field;
     const emitted = this.nozzle.emittedVolume;
-    // The audit that matters. In M1 only two paths move mass, so this should be
-    // ~0; absorption, emission and fragmentation each get a chance to break it
-    // later.
-    const residual = emitted - (grainVol + this.lostVolume);
+    // The audit that matters. Note there is no packing-fraction term: the
+    // heightfield's `solidVolume` is solid grain volume, the same currency the
+    // grains are counted in, which is exactly why elevation and volume were
+    // decoupled. Absorption, emission and fragmentation each get a chance to
+    // break this later.
+    const residual = emitted -
+      (grainVol + field.volume + field.escapedVolume + this.lostVolume + this.eatenVolume);
     const rel = emitted > 0 ? Math.abs(residual) / emitted : 0;
     const grams = emitted * SAND_PARTICLE_DENSITY * 1000;
 
     const lines = [
       `${fps.toFixed(0)} fps   ${avg.toFixed(1)} ms   sim ${values.simSpeed.toFixed(2)}x`,
-      `grains ${P.count} / ${P.capacity}   flight ${phases.ballistic}   resting ${phases.resting}`,
+      `grains ${P.count} / ${P.capacity}   flight ${phases.ballistic}   resting ${phases.resting}` +
+        `   lumps ${P.aggCount}`,
       `poured ${grams < 1000 ? grams.toFixed(1) + ' g' : (grams / 1000).toFixed(2) + ' kg'}` +
         `   sim clock ${this.simTime.toFixed(2)} s`,
+      `pile peak ${(this.peakHeight() * 100).toFixed(2)} cm` +
+        `   buried ${(field.volume * SAND_PARTICLE_DENSITY * 1000).toFixed(1)} g` +
+        `   into lumps ${(this.eatenVolume * SAND_PARTICLE_DENSITY * 1000).toFixed(1)} g` +
+        (values.relaxation ? '   SLUMPING' : ''),
       `volume audit ${residual.toExponential(2)}  (${(rel * 100).toFixed(4)}%)`,
     ];
     if (values.autoRestart && this.idleSeconds > 0) {
@@ -260,14 +278,24 @@ class App {
   }
 
   frame(now) {
+    requestAnimationFrame(this.frame);
+
+    // Skip vsyncs until the cap allows another frame. The simulation clock is
+    // untouched -- the step that follows is the full elapsed time -- so this
+    // shows fewer moments of the same pour rather than a slower one. Half a
+    // millisecond of slack, or a 60 fps cap on a 60 Hz display drops every
+    // other frame to 30.
     const raw = now - this.lastTime;
+    if (raw < 1000 / Math.max(values.targetFps, 1) - 0.5) return;
     this.lastTime = now;
     this.frameTimes.push(raw);
     if (this.frameTimes.length > 30) this.frameTimes.shift();
 
     if (!this.paused || this.stepOnce) {
       // Cap the step so a backgrounded tab does not resume with a huge jump.
-      const dt = Math.min(raw / 1000, 0.1);
+      // Deliberately asking for a low frame rate is not that, so the cap gives
+      // way to the frame the user asked for.
+      const dt = Math.min(raw / 1000, Math.max(0.1, 1.5 / Math.max(values.targetFps, 1)));
       this.simulate(dt);
       this.stepOnce = false;
 
@@ -288,7 +316,6 @@ class App {
     }
     this.render();
     this.updateHud(now);
-    requestAnimationFrame(this.frame);
   }
 }
 
@@ -335,6 +362,8 @@ function main() {
   // parameter sweep without dragging sliders.
   globalThis.sim = app;
   globalThis.params = values;
+  globalThis.field = app.field;
+  globalThis.config = CONFIG;
   globalThis.syncPanel = sync;
 
   console.log(

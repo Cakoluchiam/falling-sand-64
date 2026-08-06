@@ -73,6 +73,7 @@ export const values = {
 
   // --- Run ---
   simSpeed: 1,
+  targetFps: 60,
   gravity: 9.81,
   autoRestart: true,
   autoRestartDelay: 2,
@@ -81,6 +82,10 @@ export const values = {
   // Solid volume per second. 1.509e-4 m^3/s = 400 g/s = a 4 kg bucket in 10 s.
   flowRate: 400 / (SAND_PARTICLE_DENSITY * 1000),
   apertureRadius: 0.02,
+  // A flat opening the sand passes through, versus a source with volume. The
+  // disc is the cleaner instrument -- one knob, one effect -- so it is the
+  // default; see the note in Nozzle._spawn for how they differ.
+  apertureBall: false,
   nozzleHeight: 0.5,
   initialSpeed: 0.4,
   // Sand is turbulent while it is being poured, not only while it falls. Grains
@@ -159,7 +164,13 @@ export const values = {
   // the other way round, so the number on the panel is one you can look up.
   fallSpeed: 6,
 
-  // --- Pile (M2) ---
+  // --- Pile ---
+  // The mesh does not slump. Repose is whatever the contact solver produces,
+  // which is the point of the whole project -- building a toppling rule into
+  // the heightfield would make the measured repose angle largely the number
+  // typed in below. The three sliders under it drive that comparison arm only,
+  // and mean nothing while it is off.
+  relaxation: false,
   reposeAngle: 32,
   // Degrees above the repose angle at which a slope starts avalanching. Stored
   // as a gap rather than an absolute static angle so static > repose is
@@ -173,7 +184,10 @@ export const values = {
   activeLayerDepth: 2,
   pureDEM: false,
   sizeMemory: true,
-  // Bootstrap only; packing fraction becomes a measured per-cell output at M4.
+  // Live now -- it is what converts absorbed volume into surface height. At M4
+  // height comes from the observed underside of the resting grains instead and
+  // this drops back to a bootstrap for cells that have none, with the measured
+  // value shown alongside it.
   packingFraction: 0.62,
 
   // --- Render ---
@@ -246,7 +260,11 @@ export const derived = {
     const tangent = Math.tan(Math.min(values.pourSpread, 80) * Math.PI / 180) * Math.SQRT2;
     const sinAngle = tangent / Math.sqrt(1 + tangent * tangent);
     const scatter = v0 * sinAngle * t;
-    const fromAperture = values.apertureRadius / Math.SQRT2;
+    // RMS distance from the axis. A uniform disc gives R/sqrt(2); a uniform
+    // ball spreads a third of its variance along the flow instead, leaving
+    // R*sqrt(2/5) across it, so the same slider makes a 12% narrower stream.
+    const fromAperture = values.apertureRadius *
+      (values.apertureBall ? Math.sqrt(0.4) : 1 / Math.SQRT2);
     return 2 * Math.hypot(fromAperture, scatter);
   },
   // How far downrange a tilted pour puts the pile, measured from directly under
@@ -301,6 +319,11 @@ export const SCHEMA = [
     help: 'How fast the simulation runs against the wall clock. Drop below 1x to watch grains in flight. The physics is unchanged — only the clock moves.',
   },
   {
+    key: 'targetFps', group: 'Run', label: 'Frame rate cap',
+    units: [{ unit: 'fps', scale: 1 }], min: 2, max: 240, log: true,
+    help: 'Draw no more often than this. The simulation clock is untouched, so the sand falls at the same speed — you are only seeing fewer of its moments. Drop it to a handful of frames a second to check the pour looks the same as it does at 60: the stream should stay a continuous ribbon rather than breaking into per-frame discs, and the pile should come out the same shape. Your monitor still caps the top end.',
+  },
+  {
     key: 'gravity', group: 'Run', label: 'Gravity',
     units: [{ unit: 'm/s²', scale: 1 }], min: 0.62, max: 24.79, log: true,
     help: 'Surface gravity. The range runs Pluto to Jupiter, which puts the Moon at 25%, Mars at 50% and Earth at 75%.',
@@ -332,7 +355,11 @@ export const SCHEMA = [
   {
     key: 'apertureRadius', group: 'Source', label: 'Aperture radius',
     units: [{ unit: 'cm', scale: 100 }], min: 0.2, max: 20, log: true,
-    help: 'Radius of the opening the sand falls through. The stream off a tipped bucket lip is roughly 2 cm.',
+    help: 'Radius of the opening the sand falls through. The stream off a tipped bucket lip is roughly 2 cm. The opening turns to face the pour direction, so tilting the pour does not squash it.',
+  },
+  {
+    key: 'apertureBall', group: 'Source', label: 'Ball-shaped aperture', type: 'bool',
+    help: 'Release the sand from throughout a ball the size of the aperture, instead of across a flat opening. Two things change. Sand comes out thickest down the middle and thins toward the edge, where a flat opening releases it evenly across its whole width — so the stream is centre-heavy and lands about 12% narrower for the same setting. And the source gains depth along the flow, meaning the aperture slider now sets how far the sand is smeared lengthwise as well as how wide it is, which is worth knowing before reading a sweep of it.',
   },
   {
     key: 'nozzleHeight', group: 'Source', label: 'Pour height',
@@ -449,19 +476,23 @@ export const SCHEMA = [
   },
 
   {
+    key: 'relaxation', group: 'Pile', label: 'Slump the surface (comparison arm)', type: 'bool',
+    help: 'Let the pile surface collapse toward the repose angle on its own, instead of leaving it to the grains. Off by default and deliberately so: this project exists to find out what shape sand makes, and a surface that slumps to a dialed angle mostly hands that angle straight back. It is here so the two can be compared rather than argued about — pour the same sand twice and see whether the angle the friction produces agrees with the angle this rule was told to produce. The three sliders below drive this arm and nothing else.',
+  },
+  {
     key: 'reposeAngle', group: 'Pile', label: 'Repose angle',
-    units: [{ unit: '°', scale: 1 }], min: 15, max: 49, pending: true,
-    help: 'The steepest slope a pile settles back to. Dry sand rests near 32°.' + SOON,
+    units: [{ unit: '°', scale: 1 }], min: 15, max: 49,
+    help: 'The steepest slope the surface settles back to, when the comparison arm above is on. Dry sand rests near 32°. With the arm off this does nothing — the angle is then a readout of what friction and restitution produced, not an input.',
   },
   {
     key: 'avalancheGap', group: 'Pile', label: 'Avalanche gap',
-    units: [{ unit: '° over repose', scale: 1 }], min: 0, max: 6, pending: true,
-    help: 'How much steeper than the repose angle a slope gets before it lets go. This gap is what makes avalanches happen in bursts rather than as a constant smooth trickle.' + SOON,
+    units: [{ unit: '° over repose', scale: 1 }], min: 0, max: 6,
+    help: 'How much steeper than the repose angle a slope gets before it lets go, when the comparison arm is on. This gap is what makes avalanches happen in bursts rather than as a constant smooth trickle.',
   },
   {
     key: 'slumpHalfLife', group: 'Pile', label: 'Slump half-life',
-    units: [{ unit: 's', scale: 1 }], min: 0.01, max: 1, log: true, pending: true,
-    help: 'How quickly a too-steep slope collapses once it starts moving.' + SOON,
+    units: [{ unit: 's', scale: 1 }], min: 0.01, max: 1, log: true,
+    help: 'How quickly a too-steep slope collapses once it starts moving, when the comparison arm is on. Measured on one pair of neighbouring cells; a real slope has six pulling at once and settles faster.',
   },
 
   {
@@ -477,6 +508,11 @@ export const SCHEMA = [
   {
     key: 'sizeMemory', group: 'Exchange', label: 'Size memory', type: 'bool', pending: true,
     help: 'Remember which grain sizes were buried where, so a disturbed pile re-exposes the sizes that were actually there instead of average ones.' + SOON,
+  },
+  {
+    key: 'packingFraction', group: 'Exchange', label: 'Packing fraction',
+    units: [{ unit: '', scale: 1 }], min: 0.45, max: 0.74,
+    help: 'How much of the buried pile is sand rather than air, which is what turns absorbed volume into surface height. Loose dry sand is about 0.55, well-shaken sand about 0.64, and 0.74 is the densest equal spheres can be stacked. This becomes a measurement rather than a setting once grains are being absorbed — the solver produces whatever local packing it produces, and a single number here cannot be right everywhere.',
   },
 
   {

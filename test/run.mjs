@@ -20,6 +20,7 @@ const SUITES = [
   ['smoke', 'smoke.mjs', 'RNG, noise, curl field, particle store, nozzle, backdating'],
   ['sizes', 'sizes.mjs', 'grain size limits, uniform sand, truncated sampling'],
   ['pour', 'pour.mjs', 'pour angle aims, pour spread widens, launch geometry'],
+  ['hexfield', 'hexfield.mjs', 'lattice geometry, sampling continuity, volume ledger, relaxation'],
   ['clumps', 'clumps.mjs', 'clump population: rate, interleaving, self-correction'],
 ];
 

@@ -53,6 +53,12 @@
   #panel button:hover { background: #353b45; }
 
   .hint { margin: 2px 0 0; font-size: 10px; color: var(--dim); }
+  .hint kbd {
+    font: inherit; font-family: ui-monospace, Consolas, monospace;
+    color: var(--text); background: #2b3038;
+    border: 1px solid var(--line); border-radius: 3px;
+    padding: 0 3px;
+  }
 
   .group { margin-top: 14px; }
   .group h2 {
@@ -106,6 +112,11 @@
     display: flex; flex-direction: column; justify-content: center;
     padding: 0 12%;
   }
+  /* `display: flex` above outranks the browser's own [hidden] rule, so without
+     this the empty error panel stays laid out over the whole stage and eats
+     every pointer event the camera needs. Invisible, and it looked like the
+     camera was simply not wired up. */
+  #error[hidden] { display: none; }
   #error h1 { font-size: 18px; margin: 0 0 8px; }
   #error p { color: var(--dim); margin: 0; max-width: 60ch; }
 </style>
@@ -124,7 +135,8 @@
     <h1>Falling Sand 64</h1>
     <button id="reset" type="button">Reset</button>
   </header>
-  <p class="hint">Hover any control for what it does.</p>
+  <p class="hint">Drag to orbit · wheel to zoom · right-drag or <kbd>shift</kbd>-drag to pan</p>
+  <p class="hint"><kbd>space</kbd> pause · <kbd>s</kbd> step · <kbd>r</kbd> reset · hover any control for what it does</p>
 </aside>
 
 <script type="module" src="./src/main.js"></script>

@@ -2,7 +2,7 @@ const base = new URL('../src/', import.meta.url).href;
 const { Rng } = await import(base + 'rng.js');
 const { Noise } = await import(base + 'noise.js');
 const { values, derived, SAND_PARTICLE_DENSITY } = await import(base + 'params.js');
-const { Particles } = await import(base + 'particles.js');
+const { Particles, PHASE_BALLISTIC, PHASE_RESTING } = await import(base + 'particles.js');
 const { Nozzle } = await import(base + 'source.js');
 
 let failures = 0;
@@ -62,6 +62,80 @@ console.log('clumps arrive with the sand, not after it');
   check('no clump is emitted after the sand stops', lastClump <= lastGrain, `${lastClump} vs ${lastGrain}`);
   check('nothing is emitted once the store is full', lastGrain <= fill + 1, `${lastGrain} vs ${fill}`);
 }
+
+// ---- REGRESSION: a clump must not punch a hole in the sand ----
+// The whole point of metering the two streams separately. When the clump came
+// out of the same volume budget as the grains, one clump was 5000 grains' worth
+// of it, and the sand behind it visibly thinned for a tenth of a second. What
+// absorbs a large body is the likelihood of the next one, not the flow.
+console.log('\na clump does not interrupt the sand');
+// Run it at the reference pour and at a slow one. A clump is a fixed slug of
+// volume, so the slower the sand the longer the hole: 1.25 frames of flow at
+// 400 g/s, but 8 at 60 g/s, which is where it was obvious.
+const referenceFlow = values.flowRate;
+for (const [label, gramsPerSecond] of [['400 g/s', 400], ['60 g/s', 60]]) {
+  values.flowRate = gramsPerSecond / (SAND_PARTICLE_DENSITY * 1000);
+  console.log(`  --- ${label} (one clump = ` +
+    `${(derived.meanClumpVolume() / (values.flowRate * dt)).toFixed(1)} frames of flow) ---`);
+  const P = new Particles(200000);
+  const nz = new Nozzle(new Rng(19), new Noise(19));
+  const FRAMES = 30000, WINDOW = 30;
+  const grainVolPerFrame = new Float64Array(FRAMES);
+  const clumpFrames = [];
+  let prevClumps = 0;
+  for (let f = 0; f < FRAMES; f++) {
+    nz.step(dt, f * dt, P, values);
+    let gv = 0;
+    for (let k = P.count - 1; k >= 0; k--) {
+      const i = P.live[k];
+      if (!P.isAgg[i]) gv += P.vol[i];
+      P.free(i);
+    }
+    grainVolPerFrame[f] = gv;
+    if (nz.clumpCount > prevClumps) { clumpFrames.push(f); prevClumps = nz.clumpCount; }
+  }
+  let all = 0;
+  for (const g of grainVolPerFrame) all += g;
+  const baseline = all / FRAMES;
+
+  // Every frame from a clump's own frame to WINDOW frames after it -- the
+  // stretch the old design spent paying the clump back.
+  const after = new Uint8Array(FRAMES);
+  for (const f of clumpFrames) {
+    for (let d = 0; d < WINDOW && f + d < FRAMES; d++) after[f + d] = 1;
+  }
+  let wake = 0, wakeN = 0, worstFrame = Infinity;
+  for (let f = 0; f < FRAMES; f++) {
+    if (!after[f]) continue;
+    wake += grainVolPerFrame[f]; wakeN++;
+    worstFrame = Math.min(worstFrame, grainVolPerFrame[f]);
+  }
+  const ratio = (wake / wakeN) / baseline;
+  // And the single leanest frame anywhere, clump or not, as a floor check.
+  let leanest = Infinity;
+  for (const g of grainVolPerFrame) leanest = Math.min(leanest, g);
+
+  console.log(`  ${clumpFrames.length} clumps over ${FRAMES} frames, ${wakeN} frames within ${WINDOW} of one`);
+  console.log(`  sand in those frames ${(ratio * 100).toFixed(2)}% of baseline`);
+  console.log(`  leanest frame behind a clump ${(worstFrame / baseline * 100).toFixed(1)}% of baseline` +
+    `, leanest frame overall ${(leanest / baseline * 100).toFixed(1)}%`);
+  check('the sand behind a clump flows at the same rate as anywhere else',
+    Math.abs(ratio - 1) < 0.02, `${(ratio * 100).toFixed(2)}%`);
+  check('no frame behind a clump is starved', worstFrame > baseline * 0.5,
+    `${(worstFrame / baseline * 100).toFixed(1)}%`);
+
+  // The flow rate slider still means the total, lumps included, so the grain
+  // stream runs a steady (1 - clumpFraction) of it rather than dipping.
+  const total = nz.emittedVolume / (FRAMES * dt);
+  console.log(`  total flow ${(total / values.flowRate * 100).toFixed(2)}% of the slider` +
+    `, sand alone ${(baseline / dt / values.flowRate * 100).toFixed(2)}%`);
+  check('total flow matches the slider', Math.abs(total / values.flowRate - 1) < 0.01,
+    `${(total / values.flowRate).toFixed(4)}x`);
+  check('the sand alone runs at one minus the clump fraction',
+    Math.abs(baseline / dt / values.flowRate - (1 - values.clumpFraction)) < 0.005,
+    `${(baseline / dt / values.flowRate).toFixed(4)} vs ${1 - values.clumpFraction}`);
+}
+values.flowRate = referenceFlow;
 
 // ---- Rate and volume fraction, pooled ----
 console.log('\npooled over 8 x 120 s');
@@ -127,6 +201,61 @@ console.log('\nconsistency across 40 separate 30 s pours');
   console.log(`  variance ratio   ${(varr / mean).toFixed(3)}  (1.0 = Poisson, lower = self-correcting)`);
   check('self-correction beats Poisson variance', varr / mean < 0.6, `${(varr / mean).toFixed(3)}`);
   check('every pour shows at least one clump', counts[0] >= 1, `worst run had ${counts[0]}`);
+}
+
+// ---- Nothing comes to rest inside a lump ----
+// The two streams pass through each other on the way down, which is what lets
+// them be metered separately -- there is no contact physics in freefall, so a
+// clump and the sand it left the nozzle with need not take turns. It only
+// becomes wrong once they stop.
+console.log('\nnothing comes to rest inside a lump');
+{
+  const P = new Particles(1000);
+  const place = (x, y, z, r, agg, phase) => {
+    const i = P.alloc();
+    P.px[i] = x; P.py[i] = y; P.pz[i] = z;
+    P.radius[i] = r; P.vol[i] = (Math.PI / 6) * (2 * r) ** 3;
+    P.isAgg[i] = agg ? 1 : 0;
+    if (agg) P.markAggregate(i);
+    P.phase[i] = phase;
+    return i;
+  };
+  const R = 0.0085, gr = 0.0005;
+
+  const falling = place(0, 0.2, 0, R, true, PHASE_BALLISTIC);
+  const inside = place(0.002, 0.2, 0, gr, false, PHASE_RESTING);
+  const beside = place(R + gr + 1e-4, 0.2, 0, gr, false, PHASE_RESTING);
+  const touching = place(R + gr * 0.9, 0.2, 0, gr, false, PHASE_RESTING);
+  check('a grain inside a falling lump is caught', P.fallingClumpContaining(inside) === falling);
+  check('a grain clear of it is not', P.fallingClumpContaining(beside) === -1);
+  check('nor is one resting against it', P.fallingClumpContaining(touching) === -1,
+    'centre-inside, not spheres-touching');
+
+  // The rule that would run away: a lump parked on the pile must not keep
+  // eating sand that lands on it. Nothing removes clumps until M4 and nothing
+  // stacks them until M3, so they heap up where the sand is landing; applied to
+  // resting lumps this drained an 80 s pour from 1% to 27% and climbing.
+  P.phase[falling] = PHASE_RESTING;
+  check('a lump at rest catches nothing', P.fallingClumpContaining(inside) === -1);
+
+  // What does the work instead: one sweep when the lump arrives. A clump falls
+  // at something like seventeen times a grain's terminal velocity, so it lands
+  // on the sand it was poured with rather than beside it.
+  const before = P.count, lumpVol = P.vol[falling];
+  const eaten = P.eatGrainsInside(falling);
+  check('landing swallows what is inside it', Math.abs(eaten - P.vol[inside]) < 1e-18,
+    `${eaten.toExponential(3)}`);
+  check('and leaves what is not', P.count === before - 1 && P.slot[beside] >= 0 && P.slot[touching] >= 0);
+  check('the lump does not grow', P.vol[falling] === lumpVol);
+  check('it does not eat itself', P.slot[falling] >= 0 && P.aggCount === 1);
+
+  // Freeing a lump has to take it out of the aggregate list, or a stale index
+  // gets reused as a grain and every landing grain is measured against it.
+  P.free(falling);
+  check('freeing a lump drops it from the aggregate list', P.aggCount === 0);
+  const reused = place(0, 0.2, 0, gr, false, PHASE_BALLISTIC);
+  check('and its slot comes back as an ordinary grain',
+    reused === falling && P.aggCount === 0 && P.fallingClumpContaining(beside) === -1);
 }
 
 // ---- Controls ----

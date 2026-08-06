@@ -37,15 +37,33 @@ void main() {
   vRadius = iRadius;
   vSeed = iSeed;
 
-  // Under perspective the silhouette of a sphere is slightly larger than its
-  // geometric radius. Expanding by d / sqrt(d^2 - r^2) covers it exactly rather
-  // than relying on a fudge factor that clips grains near the camera.
-  float d = length(uEye - iCenter);
+  // A sphere's silhouette is the cone of rays from the eye tangent to it. Slice
+  // that cone perpendicular to its own axis at the centre and you get a circle
+  // of radius r * d / sqrt(d^2 - r^2) whose projection *is* the silhouette, so
+  // a square of that half-size bounds it exactly.
+  vec3 toEye = uEye - iCenter;
+  float d = length(toEye);
   float scale = (d > iRadius * 1.001)
     ? iRadius * d * inversesqrt(d * d - iRadius * iRadius)
     : iRadius * 32.0;  // eye inside the sphere: just cover everything
 
-  vec3 world = iCenter + (aCorner.x * uCamRight + aCorner.y * uCamUp) * scale;
+  // The quad has to be square to the *cone's* axis, not to the camera. Built on
+  // uCamRight/uCamUp it lies parallel to the image plane instead, which is a
+  // slanted cut through the cone -- short in the radial direction by 1/cos(t)
+  // for a grain t off the optical axis. Off-axis spheres project to ellipses
+  // stretched radially by that same 1/cos(t), which is correct perspective and
+  // was never the bug; the bug was that the quad grew by none of it, so the
+  // ellipse had its sides clipped off exactly where it needed them. Around 20%
+  // at the corner of a 50 degree field.
+  vec3 axis = toEye / max(d, 1e-9);
+  vec3 right = cross(uCamUp, axis);
+  float rl = length(right);
+  // Looking straight along the camera's up axis at a grain. uCamRight is
+  // perpendicular to uCamUp, so it is perpendicular to the cone axis too.
+  right = (rl > 1e-6) ? right / rl : uCamRight;
+  vec3 up = cross(axis, right);
+
+  vec3 world = iCenter + (aCorner.x * right + aCorner.y * up) * scale;
   vWorld = world;
   gl_Position = uViewProj * vec4(world, 1.0);
 }`;
