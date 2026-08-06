@@ -157,7 +157,7 @@ class App {
       // ones already backdated to step end. Emitting first would integrate the
       // new grains a second time and double-count their fall.
       this.integrateBallistic(step);
-      this.nozzle.step(step, this.simTime, this.particles, values);
+      this.nozzle.step(step, this.simTime, this.particles, values, this.curl);
       remaining -= step;
       iters++;
     }

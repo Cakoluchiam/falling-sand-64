@@ -2,7 +2,7 @@ const base = new URL('../src/', import.meta.url).href;
 const { Rng } = await import(base + 'rng.js');
 const { Noise } = await import(base + 'noise.js');
 const { values, derived } = await import(base + 'params.js');
-const { Particles, PHASE_BALLISTIC } = await import(base + 'particles.js');
+const { Particles, PHASE_BALLISTIC, PHASE_RESTING } = await import(base + 'particles.js');
 const { Nozzle } = await import(base + 'source.js');
 const { stepBallistic } = await import(base + 'ballistic.js');
 const { HexField } = await import(base + 'hexfield.js');
@@ -210,61 +210,88 @@ console.log('\nthe ball is a source with volume, not a wider opening');
 // the default step and a visible 12.6 cm hole at 0.16 s.
 console.log('\nthe emitted ribbon and the integrator agree on the same curve');
 {
-  values.pourAngle = 0; values.pourSpread = 1; values.clumpFraction = 0;
-  values.apertureBall = false;
+  // Not that the backdate is *accurate* -- that it is the *same map*. Ribbons
+  // tile seamlessly exactly when a grain emitted a full step old sits where the
+  // integrator would have carried a fresh one, because then "emitted at age h,
+  // stepped j times" and "emitted at age 0, stepped j+1 times" are the same
+  // composition. Any formula that merely approximates the integrator leaves a
+  // step at every ribbon boundary. Drag is deliberately ON here: the vacuum
+  // backdate passed this with drag off and failed it by 21% with drag on.
+  Object.assign(values, { pourAngle: 0, pourSpread: 0, clumpFraction: 0,
+    apertureBall: false, apertureRadius: 0, sorting: 0, turbAmplitude: 0,
+    surgeDepth: 0, fallSpeed: 6 });
   const field = new HexField(64, 64, 0.003);
   const g = values.gravity, v0 = values.initialSpeed;
+  const dragCoef = derived.dragCoef();
+  const opts = { gravity: g, dragCoef, turbAmplitude: 0, curl: null,
+    halfW: 1, halfD: 1, tmp: new Float64Array(3) };
 
   for (const h of [1 / 120, 0.04, 0.16]) {
-    // One step of the integrator, drag and turbulence off, against the
-    // analytic fall the backdate assumes for a grain of that age.
-    const P = new Particles(16);
-    const i = P.alloc();
-    P.px[i] = 0; P.py[i] = values.nozzleHeight; P.pz[i] = 0;
-    P.vx[i] = 0; P.vy[i] = -v0; P.vz[i] = 0;
-    P.radius[i] = 5e-4; P.vol[i] = 1e-10; P.isAgg[i] = 0; P.phase[i] = PHASE_BALLISTIC;
-    stepBallistic(P, field, h, { gravity: g, dragCoef: 0, turbAmplitude: 0, curl: null,
-      halfW: 1, halfD: 1, tmp: new Float64Array(3) });
-    const walked = values.nozzleHeight - P.py[i];
-    const analytic = v0 * h + 0.5 * g * h * h;
-    const eulerWouldBe = (v0 + g * h) * h;
-    console.log(`  step ${h.toFixed(4)} s | integrator ${(walked * 100).toFixed(3)} cm` +
-      ` | backdate ${(analytic * 100).toFixed(3)} cm | v_new*dt would be ${(eulerWouldBe * 100).toFixed(3)} cm`);
-    check(`  one step matches the backdate at ${h.toFixed(4)} s`,
-      Math.abs(walked - analytic) < 1e-6, `${((walked - analytic) * 1000).toExponential(2)} mm apart`);
+    // Where the nozzle puts a grain that is one whole step old.
+    const Pn = new Particles(64);
+    new Nozzle(new Rng(5), new Noise(5)).step(h, 0, Pn, values);
+    const emitted = Pn.py[Pn.live[0]];
+
+    // Where one integrator step carries a grain released at the nozzle.
+    const Pi = new Particles(8);
+    const i = Pi.alloc();
+    Pi.px[i] = 0; Pi.py[i] = values.nozzleHeight; Pi.pz[i] = 0;
+    Pi.vx[i] = 0; Pi.vy[i] = -v0; Pi.vz[i] = 0;
+    Pi.radius[i] = values.medianDiameter / 2; Pi.vol[i] = 1e-10;
+    Pi.isAgg[i] = 0; Pi.phase[i] = PHASE_BALLISTIC;
+    stepBallistic(Pi, field, h, opts);
+
+    const vacuum = values.nozzleHeight - (v0 * h + 0.5 * g * h * h);
+    console.log(`  step ${h.toFixed(4)} s | emitted ${(emitted * 100).toFixed(4)} cm` +
+      ` | integrated ${(Pi.py[i] * 100).toFixed(4)} cm` +
+      ` | a vacuum backdate would say ${(vacuum * 100).toFixed(4)} cm`);
+    check(`  the nozzle and the integrator agree at ${h.toFixed(4)} s`,
+      Math.abs(emitted - Pi.py[i]) < 1e-9,
+      `${((emitted - Pi.py[i]) * 1000).toExponential(2)} mm apart`);
   }
 
-  // And end to end: pour into a flat field and look for a hole in the column.
-  const holeAt = (h) => {
-    const P = new Particles(300000);
+  // End to end: pour into a flat field and look for any band, thick or thin.
+  // Measuring only for holes is how the first round of this missed a 21%
+  // ripple of *dense* bands sitting right where the holes had been.
+  const bandingAt = (h) => {
+    const P = new Particles(400000);
     const nz = new Nozzle(new Rng(31), new Noise(31));
-    const opts = { gravity: g, dragCoef: 0, turbAmplitude: 0, curl: null,
-      halfW: 1, halfD: 1, tmp: new Float64Array(3) };
-    for (let s = 0; s < Math.ceil(1.0 / h); s++) {
+    for (let s = 0; s < Math.ceil(0.8 / h); s++) {
       stepBallistic(P, field, h, opts);
+      // Retire what has landed, so the store never fills and stops the pour.
+      for (let k = P.count - 1; k >= 0; k--) {
+        const i = P.live[k];
+        if (P.phase[i] === PHASE_RESTING) P.free(i);
+      }
       nz.step(h, s * h, P, values);
     }
-    const bins = new Float64Array(52);
+    const B = 240, bins = new Float64Array(B);
     for (let k = 0; k < P.count; k++) {
-      const b = Math.round(P.py[P.live[k]] * 100);
-      if (b > 0 && b < bins.length) bins[b]++;
+      const b = Math.floor(P.py[P.live[k]] / 0.25 * B);
+      if (b >= 0 && b < B) bins[b]++;
     }
-    // Against the geometric mean of the neighbours, which follows the stream's
-    // own thinning with depth instead of fighting it.
-    let worst = 1, at = -1;
-    for (let b = 6; b < 45; b++) {
-      if (bins[b - 4] < 50 || bins[b + 4] < 50) continue;
-      const r = bins[b] / Math.sqrt(bins[b - 4] * bins[b + 4]);
-      if (r < worst) { worst = r; at = b; }
+    // Against a running mean wider than a ribbon, so the stream's own thinning
+    // with depth is divided out and only the ripple is left.
+    let hi = 1, lo = 1, sum = 0, n = 0;
+    for (let b = 15; b < B - 15; b++) {
+      let s2 = 0;
+      for (let d = -12; d <= 12; d++) s2 += bins[b + d];
+      const smooth = s2 / 25;
+      if (smooth < 20) continue;
+      const r = bins[b] / smooth;
+      hi = Math.max(hi, r); lo = Math.min(lo, r);
+      sum += (r - 1) ** 2; n++;
     }
-    return { worst, at };
+    return { hi, lo, rms: Math.sqrt(sum / n) };
   };
   for (const h of [1 / 120, 0.16]) {
-    const r = holeAt(h);
-    console.log(`  step ${h.toFixed(4)} s | thinnest band ${(r.worst * 100).toFixed(0)}% of its neighbours at ${r.at} cm`);
-    check(`  no hole in the stream at ${h.toFixed(4)} s`, r.worst > 0.6,
-      `${(r.worst * 100).toFixed(0)}% at ${r.at} cm`);
+    const r = bandingAt(h);
+    console.log(`  step ${h.toFixed(4)} s | densest ${r.hi.toFixed(2)}x, thinnest ${r.lo.toFixed(2)}x,` +
+      ` ripple ${(r.rms * 100).toFixed(1)}% rms`);
+    check(`  the stream is smooth at ${h.toFixed(4)} s`, r.rms < 0.04 && r.hi < 1.2 && r.lo > 0.8,
+      `${(r.rms * 100).toFixed(1)}% rms, ${r.hi.toFixed(2)}x / ${r.lo.toFixed(2)}x`);
   }
+  values.apertureRadius = 0.02;
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
