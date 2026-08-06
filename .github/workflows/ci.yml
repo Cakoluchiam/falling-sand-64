@@ -6,6 +6,13 @@
 # only hold pooled over many seeded runs) while the rest finish in seconds.
 # Fanning out puts the wall clock at the slowest suite instead of their sum, and
 # names the failing suite in the checks list without opening a log.
+#
+# `all-tests` at the bottom exists so branch protection has **one** name to
+# require. Requiring the matrix jobs directly means listing every suite on every
+# Node version, and a required check that stops reporting blocks all merges
+# indefinitely -- so dropping a Node version or renaming a suite would wedge the
+# repo until someone edited the ruleset to match. The gate's name never changes,
+# whatever the matrix does underneath it.
 
 name: tests
 
@@ -43,3 +50,22 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
       - run: node test/run.mjs ${{ matrix.suite }}
+
+  # The single check to require in branch protection.
+  all-tests:
+    needs: test
+    # Without this the gate is skipped when the matrix fails, and a skipped
+    # required check reads as success -- which would make it worse than nothing.
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # `result` on a matrix job is the aggregate: success only if every leg
+      # succeeded. Read through the environment rather than interpolated into
+      # the script, which is the habit to keep even where the value is a
+      # controlled enum.
+      - env:
+          RESULT: ${{ needs.test.result }}
+        run: |
+          echo "test matrix: $RESULT"
+          [ "$RESULT" = success ]
