@@ -1,0 +1,45 @@
+# The suites are standalone scripts with no dependencies, so CI is just Node
+# and a checkout -- no install step, nothing to cache.
+#
+# They run as a matrix rather than through `test/run.mjs` in one job because
+# `clumps` takes minutes on its own (clump arrivals are rare, so its tolerances
+# only hold pooled over many seeded runs) while the rest finish in seconds.
+# Fanning out puts the wall clock at the slowest suite instead of their sum, and
+# names the failing suite in the checks list without opening a log.
+
+name: tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+# A second push to the same branch makes the first one's answer irrelevant.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false          # one broken suite should not hide the others
+      matrix:
+        # The sources are ES modules in .js files with no package.json to
+        # declare it, so Node has to detect the module syntax on its own --
+        # which it only does unprompted from 22.7. test/run.mjs refuses to
+        # start below that rather than failing incomprehensibly.
+        node: ['22', '24']
+        suite: [modules, smoke, sizes, pour, hexfield, clumps]
+    name: ${{ matrix.suite }} (node ${{ matrix.node }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - run: node test/run.mjs ${{ matrix.suite }}

@@ -13,10 +13,24 @@ import { dirname, join } from 'node:path';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
+// The sources are ES modules in `.js` files with no `package.json` to declare
+// it, so Node has to detect the module syntax itself -- which it only does
+// unprompted from 22.7. Below that every suite dies claiming it cannot require
+// an ES module, which points nowhere near the actual problem.
+const [major, minor] = process.versions.node.split('.').map(Number);
+if (major < 22 || (major === 22 && minor < 7)) {
+  console.error(
+    `Node ${process.versions.node} is too old. This project has no package.json by\n` +
+    'design, so it needs a Node that detects ES module syntax on its own: 22.7 or newer.',
+  );
+  process.exit(2);
+}
+
 // Ordered cheapest-first, so a broken build fails in seconds rather than
 // minutes. `clumps` is slow on purpose: clumps are a rare event, and its
 // tolerances only hold when pooled across many seeded runs.
 const SUITES = [
+  ['modules', 'modules.mjs', 'every module parses and loads, paths stay relative'],
   ['smoke', 'smoke.mjs', 'RNG, noise, curl field, particle store, nozzle, backdating'],
   ['sizes', 'sizes.mjs', 'grain size limits, uniform sand, truncated sampling'],
   ['pour', 'pour.mjs', 'pour angle aims, pour spread widens, launch geometry'],

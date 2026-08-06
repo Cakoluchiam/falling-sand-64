@@ -14,9 +14,11 @@ How code in this repo is written. **Design decisions live in `PLAN.md`** — rea
 
 ```bash
 node tools/serve.js          # dev server on :8000
-node test/run.mjs            # all suites (~3 min, clumps dominates)
+node test/run.mjs            # all suites (~3.5 min, clumps dominates)
 node test/run.mjs pour       # one suite
 ```
+
+**Node 22.7 or newer.** The sources are ES modules in `.js` files and there is no `package.json` to say so, so Node has to detect the module syntax itself, which it only does unprompted from 22.7. `test/run.mjs` refuses to start below that rather than failing with a confusing `cannot require an ES module`. CI runs every suite on 22 and 24 in parallel (`.github/workflows/ci.yml`) — as a matrix rather than one job, because `clumps` takes minutes while the rest take seconds.
 
 The server exists because the sim allocates over a `SharedArrayBuffer`, which browsers only permit on a cross-origin-isolated page — that needs COOP/COEP headers, which `python -m http.server` does not send. Note `python3` is not a command on the dev machine; it is `python` / `py`.
 
