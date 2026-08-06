@@ -51,6 +51,11 @@ node test/run.mjs            all suites
 node test/run.mjs pour       one suite
 ```
 
+Needs Node 22.7 or newer: the sources are ES modules in `.js` files with no
+`package.json` to declare it, so Node has to recognise the module syntax on its
+own. The runner checks and says so rather than failing obscurely. Every suite
+runs on push and on every pull request.
+
 No framework and no dependencies. The suites are less about catching crashes
 than about pinning down behaviour that is invisible from the code — that the
 stream's spacing does not change with frame rate, that the size cap does not
