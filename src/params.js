@@ -73,6 +73,7 @@ export const values = {
 
   // --- Run ---
   simSpeed: 1,
+  targetFps: 60,
   gravity: 9.81,
   autoRestart: true,
   autoRestartDelay: 2,
@@ -308,6 +309,11 @@ export const SCHEMA = [
     key: 'simSpeed', group: 'Run', label: 'Simulation speed',
     units: [{ unit: 'x', scale: 1 }], min: 0.1, max: 10, log: true,
     help: 'How fast the simulation runs against the wall clock. Drop below 1x to watch grains in flight. The physics is unchanged — only the clock moves.',
+  },
+  {
+    key: 'targetFps', group: 'Run', label: 'Frame rate cap',
+    units: [{ unit: 'fps', scale: 1 }], min: 2, max: 240, log: true,
+    help: 'Draw no more often than this. The simulation clock is untouched, so the sand falls at the same speed — you are only seeing fewer of its moments. Drop it to a handful of frames a second to check the pour looks the same as it does at 60: the stream should stay a continuous ribbon rather than breaking into per-frame discs, and the pile should come out the same shape. Your monitor still caps the top end.',
   },
   {
     key: 'gravity', group: 'Run', label: 'Gravity',

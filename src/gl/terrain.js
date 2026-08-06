@@ -103,6 +103,19 @@ uniform vec3 uLightDir;
 
 out vec4 fragColor;
 
+float hash12(vec2 p) {
+  vec3 q = fract(vec3(p.xyx) * 0.1031);
+  q += dot(q, q.yzx + 33.33);
+  return fract((q.x + q.y) * q.z);
+}
+
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(hash12(i), hash12(i + vec2(1, 0)), f.x),
+             mix(hash12(i + vec2(0, 1)), hash12(i + vec2(1, 1)), f.x), f.y);
+}
+
 void main() {
   vec3 n = normalize(vNormal);
   // The camera can orbit under the floor, and a heightfield has no back face
@@ -111,7 +124,25 @@ void main() {
 
   // Slightly deeper and less saturated than a loose grain, so the boundary
   // between the packed surface and the grains sitting on it stays readable.
-  vec3 base = vec3(0.60, 0.51, 0.38);
+  vec3 base = vec3(0.63, 0.53, 0.39);
+
+  // Grain-scale speckle, in albedo only. Shading alone gives a flat floor one
+  // constant normal and therefore one flat colour, which reads as a card rather
+  // than as packed sand. The **normal is left exactly as the heightfield says**
+  // -- bumping it would be the surface lying about its own slope, and the
+  // shading is how you read the repose angle by eye.
+  //
+  // Each octave fades out as its period approaches a pixel, or the speckle
+  // turns into aliasing noise at distance.
+  float texel = max(fwidth(vWorld.x), fwidth(vWorld.z)) * 2.0;
+  float grain = 0.0, amp = 0.5, period = 0.02;
+  for (int o = 0; o < 3; o++) {
+    float fade = clamp(period / max(texel, 1e-9) - 1.0, 0.0, 1.0);
+    grain += (vnoise(vWorld.xz / period) - 0.5) * amp * fade;
+    amp *= 0.6;
+    period *= 0.35;
+  }
+  base *= 1.0 + grain * 0.5;
 
   float diff = max(dot(n, uLightDir), 0.0);
   float hemi = n.y * 0.5 + 0.5;

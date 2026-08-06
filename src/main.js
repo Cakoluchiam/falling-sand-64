@@ -335,14 +335,24 @@ class App {
   }
 
   frame(now) {
+    requestAnimationFrame(this.frame);
+
+    // Skip vsyncs until the cap allows another frame. The simulation clock is
+    // untouched -- the step that follows is the full elapsed time -- so this
+    // shows fewer moments of the same pour rather than a slower one. Half a
+    // millisecond of slack, or a 60 fps cap on a 60 Hz display drops every
+    // other frame to 30.
     const raw = now - this.lastTime;
+    if (raw < 1000 / Math.max(values.targetFps, 1) - 0.5) return;
     this.lastTime = now;
     this.frameTimes.push(raw);
     if (this.frameTimes.length > 30) this.frameTimes.shift();
 
     if (!this.paused || this.stepOnce) {
       // Cap the step so a backgrounded tab does not resume with a huge jump.
-      const dt = Math.min(raw / 1000, 0.1);
+      // Deliberately asking for a low frame rate is not that, so the cap gives
+      // way to the frame the user asked for.
+      const dt = Math.min(raw / 1000, Math.max(0.1, 1.5 / Math.max(values.targetFps, 1)));
       this.simulate(dt);
       this.stepOnce = false;
 
@@ -363,7 +373,6 @@ class App {
     }
     this.render();
     this.updateHud(now);
-    requestAnimationFrame(this.frame);
   }
 }
 
@@ -411,6 +420,7 @@ function main() {
   globalThis.sim = app;
   globalThis.params = values;
   globalThis.field = app.field;
+  globalThis.config = CONFIG;
   globalThis.syncPanel = sync;
 
   console.log(
