@@ -178,11 +178,19 @@ export const values = {
   avalancheGap: 3,
   slumpHalfLife: 0.1,
 
+  // --- Contacts (M3) ---
+  // Coulomb ratio at a grain-grain contact, dimensionless. Quartz on quartz is
+  // around 0.5. This is an *input*; the pile's repose angle is the output, and
+  // the two are not the same number -- see the help text.
+  friction: 0.5,
+  restitution: 0.2,
+
   // --- Exchange (M4) ---
-  // In grain diameters, so it keeps its meaning as grain size changes. 0 is
-  // meaningful: absorb as soon as a grain is covered.
+  // In grain diameters, so it keeps its meaning as grain size changes. Both
+  // ends of the slider are meaningful sentinels: 0 absorbs as soon as a grain
+  // is covered, Infinity never absorbs at all and is the pure-DEM reference
+  // run. A boolean for the latter would admit a state that contradicts this.
   activeLayerDepth: 2,
-  pureDEM: false,
   sizeMemory: true,
   // Live now -- it is what converts absorbed volume into surface height. At M4
   // height comes from the observed underside of the resting grains instead and
@@ -310,7 +318,7 @@ const ML_PER_S = { unit: 'mL/s', scale: (SAND_PARTICLE_DENSITY / SAND_BULK_DENSI
 
 // min/max are given in the FIRST unit listed and converted to SI on load, so
 // the slider curve does not move when the display unit is toggled.
-const SOON = ' Not implemented yet — this milestone builds the falling sand only.';
+const SOON = ' Not implemented yet — dimmed controls are waiting on a later milestone.';
 
 export const SCHEMA = [
   {
@@ -476,6 +484,18 @@ export const SCHEMA = [
   },
 
   {
+    key: 'friction', group: 'Pile', label: 'Grain friction',
+    units: [{ unit: '', scale: 1 }], min: 0.05, max: 1.5, log: true, logZero: true,
+    pending: true,
+    help: 'How strongly two grains resist sliding past each other, as a Coulomb ratio: the sideways force a contact can carry before it slips, divided by the force pressing the grains together. Quartz sand on quartz sand is about 0.5. This is the input the whole project turns on — the pile\'s repose angle is a result of it rather than a setting, and how the two relate is the thing being measured, so they are deliberately not the same number. Zero is reachable and worth trying: frictionless grains should spread into a puddle rather than a pile.' + SOON,
+  },
+  {
+    key: 'restitution', group: 'Pile', label: 'Bounciness',
+    units: [{ unit: '', scale: 1 }], min: 0, max: 0.9,
+    pending: true,
+    help: 'How much of an impact a grain keeps: 0 stops it dead, 1 would send it back up at the speed it arrived. Sand is low, around 0.1 to 0.3, but not zero — this is what produces the splash of grains scattering outward where the stream meets the pile. Pour spread cannot stand in for it, because that widens the stream in the air rather than at the point of impact.' + SOON,
+  },
+  {
     key: 'relaxation', group: 'Pile', label: 'Slump the surface (comparison arm)', type: 'bool',
     help: 'Let the pile surface collapse toward the repose angle on its own, instead of leaving it to the grains. Off by default and deliberately so: this project exists to find out what shape sand makes, and a surface that slumps to a dialed angle mostly hands that angle straight back. It is here so the two can be compared rather than argued about — pour the same sand twice and see whether the angle the friction produces agrees with the angle this rule was told to produce. The three sliders below drive this arm and nothing else.',
   },
@@ -497,13 +517,10 @@ export const SCHEMA = [
 
   {
     key: 'activeLayerDepth', group: 'Exchange', label: 'Active layer',
-    units: [{ unit: ' grains', scale: 1 }], min: 0.2, max: 20, log: true, logZero: true,
+    units: [{ unit: ' grains', scale: 1 }], min: 0.2, max: 20, log: true,
+    logZero: true, logInf: true,
     pending: true,
-    help: 'How deep the layer of individually simulated grains goes, counted in grain diameters. Anything buried deeper is absorbed into the pile surface to keep the grain budget bounded. 0 absorbs as soon as a grain is covered.' + SOON,
-  },
-  {
-    key: 'pureDEM', group: 'Exchange', label: 'Pure DEM (no absorption)', type: 'bool', pending: true,
-    help: 'Never absorb anything — simulate every grain forever. A diagnostic for checking that absorption is not changing the pile shape, not a usable setting: the grain budget fills in seconds.' + SOON,
+    help: 'How deep the layer of individually simulated grains goes, counted in grain diameters. Anything buried deeper is absorbed into the pile surface to keep the grain budget bounded. Both ends of this slider are special: 0 absorbs a grain as soon as it is covered, and ∞ never absorbs anything, which is pure DEM — every grain simulated forever. That end is the reference run for checking that absorption is not changing the pile shape, and it is a diagnostic rather than a usable setting, since the grain budget fills in seconds. Note the depth is a multiple of grain size while a pile is not, so no finite setting here means "never absorb" — only the ∞ detent does.' + SOON,
   },
   {
     key: 'sizeMemory', group: 'Exchange', label: 'Size memory', type: 'bool', pending: true,
