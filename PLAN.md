@@ -159,7 +159,17 @@ This is where the subtlest bugs live. Four decisions here are corrections to ear
 
 **3. Observation-driven elevation may lose to numerical reality.** Reverting to volume-derived height with a fixed φ is a pre-approved retreat, kept cheap by computing both in parallel. See the Exchange decisions above.
 
-**None of the three block M1** — there is no heightfield, no absorption and no contact solver in the approved milestone. They are recorded here so the reasoning survives to M2–M4 rather than being re-derived.
+**4. Round grains cannot interlock, and the error may hide rather than show.** Real sand grains are angular and wedge into each other like puzzle pieces; a fraction of what is measured as sand's "friction" is geometric interlocking, not the sliding coefficient of quartz on quartz. These grains are spheres, so that mechanism is simply absent, and repose is the headline output of the whole project — so this is a standing accuracy caveat on every number the simulator produces about pile shape.
+
+The usual statement of this problem does **not** apply here as written, and the difference matters. Sphere DEM normally under-predicts repose because spheres *roll*: past a moderate sliding coefficient the failure mode switches from sliding to rolling, the angle plateaus around 20–25° however high friction goes, and the standard remedy is a rolling-resistance torque standing in for a non-spherical contact patch. **These grains have no rotational degrees of freedom at all** — `particles.js` carries position and velocity and nothing angular, and the M3 spec adds nothing — so there is no rolling failure mode to plateau against.
+
+That leaves the model between two errors of opposite sign: real spheres roll, which lowers repose, and real sand interlocks, which raises it, and translation-only spheres do neither. **The hazard is a plausible answer by cancellation.** A flank angle that lands near 32° for a friction coefficient near quartz's would look like validation while being an accident of two omissions, and the project's actual question is not the absolute angle but *which parameters move it* — a model that is right by cancellation gets the sensitivities wrong even where the number is right.
+
+The distinguishing measurement is cheap and should be part of M3's repose work rather than deferred: sweep `friction` and see whether the flank angle **saturates**. Rotating spheres plateau; translation-only spheres should keep tracking `atan(μ)` upward until packing rearrangement rather than rolling becomes the limit. Either observation is informative, and a plateau found where the kinematics cannot produce one means something else is limiting the pile and is worth chasing.
+
+If it does need fixing, the options in increasing cost are rolling resistance (which first requires adding rotation, and would be a lumped proxy for a shape we are not simulating), multi-sphere glued clumps (the M5 aggregate machinery is adjacent to this and could be repurposed — a glued clump *is* an interlocked non-spherical body), and genuine non-spherical grains, which is out of scope for v1. **Nothing here is to be built now.** It is recorded so that a repose number is never quoted as though the sphere assumption were free.
+
+**None of the four block M1** — there is no heightfield, no absorption and no contact solver in the approved milestone. They are recorded here so the reasoning survives to M2–M4 rather than being re-derived.
 
 ---
 
