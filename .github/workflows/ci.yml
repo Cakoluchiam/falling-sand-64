@@ -42,7 +42,7 @@ jobs:
         # which it only does unprompted from 22.7. test/run.mjs refuses to
         # start below that rather than failing incomprehensibly.
         node: ['22', '24']
-        suite: [modules, smoke, sizes, pour, hexfield, clumps]
+        suite: [modules, smoke, sizes, pour, hexfield, hash, clumps]
     name: ${{ matrix.suite }} (node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v4

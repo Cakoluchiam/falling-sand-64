@@ -266,12 +266,30 @@ function rateAt(frac, secs = 120, seeds = 4) {
   for (let s = 1; s <= seeds; s++) n += pour(s * 13, secs).clumps;
   return { perSec: n / (secs * seeds), n };
 }
-const r0 = rateAt(0, 30, 2), r1 = rateAt(0.005), r2 = rateAt(0.02);
+// ⚠ Measured at 2% -> 8%, not at the 0.5% -> 2% this used to use, and the
+// reason is precision rather than realism.
+//
+// The statistic is a ratio of two clump counts, so its noise is set by how
+// many clumps were counted -- and the run cost is set by grain emission, which
+// does not change with clump fraction. Counting at a higher fraction is
+// therefore strictly cheaper per unit precision. Measured over five
+// independent 4-seed groups, the pooled ratio has sd 0.251 at 0.5% -> 2% and
+// **0.150** at 2% -> 8%, for the same compute.
+//
+// The old tolerance of +-0.4 on the low window was 1.6 sigma, which fails
+// about one run in six; it had simply been lucky. Widening it to a safe 3
+// sigma there would have meant +-0.75, a test that could no longer tell 4x
+// from 3.3x. At 2% -> 8%, +-0.45 is the same 3 sigma and a much sharper claim.
+//
+// Both windows are unbiased -- means of 3.995 and 4.025 against 4.00 -- so the
+// scaling law itself is sound and this is purely about how precisely it can be
+// pinned for a given amount of CPU.
+const r0 = rateAt(0, 30, 2), r1 = rateAt(0.02), r2 = rateAt(0.08);
 const ratio = r2.perSec / r1.perSec;
-console.log(`  0% -> ${r0.perSec.toFixed(2)}/s,  0.5% -> ${r1.perSec.toFixed(2)}/s (n=${r1.n}),  2% -> ${r2.perSec.toFixed(2)}/s (n=${r2.n})`);
-console.log(`  ratio ${ratio.toFixed(2)}  (want 4.00)`);
+console.log(`  0% -> ${r0.perSec.toFixed(2)}/s,  2% -> ${r1.perSec.toFixed(2)}/s (n=${r1.n}),  8% -> ${r2.perSec.toFixed(2)}/s (n=${r2.n})`);
+console.log(`  ratio ${ratio.toFixed(2)}  (want 4.00, 3-sigma band 0.45)`);
 check('zero emits no clumps', r0.n === 0);
-check('rate scales with the fraction slider', Math.abs(ratio - 4) < 0.4, ratio.toFixed(2));
+check('rate scales with the fraction slider', Math.abs(ratio - 4) < 0.45, ratio.toFixed(2));
 values.clumpFraction = 0.01;
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

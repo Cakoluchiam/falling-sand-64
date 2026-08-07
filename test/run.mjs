@@ -35,6 +35,7 @@ const SUITES = [
   ['sizes', 'sizes.mjs', 'grain size limits, uniform sand, truncated sampling'],
   ['pour', 'pour.mjs', 'pour angle aims, pour spread widens, launch geometry'],
   ['hexfield', 'hexfield.mjs', 'lattice geometry, sampling continuity, volume ledger, relaxation'],
+  ['hash', 'hash.mjs', 'contact broad phase: hierarchy, counting sort, exactly-once pairs'],
   ['clumps', 'clumps.mjs', 'clump population: rate, interleaving, self-correction'],
 ];
 

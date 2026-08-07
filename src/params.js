@@ -14,6 +14,10 @@
 // only instrument for the project's question, so it covers every parameter
 // rather than a curated subset.
 
+// The only import here, for the truncated-lognormal correction in
+// `meanGrainVolume`. `rng.js` imports nothing, so this cannot cycle.
+import { normalCdf } from './rng.js';
+
 const SQRT3_2 = Math.sqrt(3) / 2;
 
 // Quartz sand. Particle density is the density of the mineral itself; bulk
@@ -116,10 +120,19 @@ export const values = {
   // reachable and means every grain is exactly the median size.
   sorting: Math.log(2) / 2,
   // Size limits, as multiples of the median. A log-normal is unbounded both
-  // ways, so both ends need a stop: unbounded above eventually draws a grain
-  // the spatial hash cannot size for, and unbounded below draws grains tens of
-  // times finer than the median that drift like dust instead of falling.
-  minGrainRatio: 0.1,
+  // ways, so both ends need a stop: unbounded below draws grains tens of times
+  // finer than the median that drift like dust instead of landing, and
+  // unbounded above draws grains that dominate the contact broad phase.
+  //
+  // Defaulted narrow (0.5x - 4x) rather than to the full slider range, because
+  // that is the window a wide pour is actually set to and the wide default was
+  // being closed by hand every session. The sliders still reach 0.02x and 48x.
+  // Note this window interacts with `sorting`: at the 2x default the stops sit
+  // about 2 sigma below and 4 above, so the low tail is genuinely trimmed, and
+  // at high sorting the window binds well before the sorting figure implies.
+  // The Derived block prints the resulting diameter range, which is the number
+  // to read when the two disagree.
+  minGrainRatio: 0.5,
   // Smallest a clump can be, as a multiple of the median grain. This is a
   // property of *fragmentation*, not of grain size: when a clump shatters, a
   // piece larger than this is still a clump and can shatter again, while a
@@ -127,7 +140,7 @@ export const values = {
   // recursing forever, and it is the only reason the threshold exists -- a
   // large grain is simply a large grain and is never promoted to a clump.
   minClumpSize: 3.5,
-  maxGrainRatio: 12,
+  maxGrainRatio: 4,
   // --- Clumps ---
   // Clumps get their own population rather than being drawn from the tail of
   // the grain distribution. That earlier design bundled two claims: that a
@@ -239,9 +252,34 @@ export const derived = {
   // Mean, not median. Volume cubes the size spread, so at 2x sorting the
   // average grain holds 72% more sand than the median one -- which is what any
   // "how many grains in a bucket" figure has to divide by.
+  // ⚠ The size limits are part of this, and leaving them out is wrong by a
+  // factor rather than by a rounding.
+  //
+  // A grain is `median * exp(s*Z)` for standard normal Z, so its volume is
+  // `Vmedian * exp(3s*Z)` and the untruncated mean is `exp(4.5 s^2)` times the
+  // median's. But Z is drawn truncated to the size limits, and volume cubes
+  // the spread, so the tails the limits remove are exactly the ones carrying
+  // the mean. The correction is the standard truncated-lognormal one: shift
+  // the bounds by the exponent and take the ratio of normal masses.
+  //
+  // This read correctly for years only because the default limits, 0.1x to
+  // 12x, sat at -6.6 and +7.2 sigma and truncated nothing. It was always
+  // wrong for a narrowed window, which is the configuration a wide pour is
+  // actually run in, and it became wrong by default when the limits moved to
+  // 0.5x-4x. At 5x sorting in that window the untruncated formula claims a
+  // mean of 18.4 median volumes against a true 5.9 -- a three-fold error in
+  // every "how many grains is that" figure on the panel.
   meanGrainVolume() {
     const s = values.sorting;
-    return derived.grainVolume() * Math.exp(4.5 * s * s);
+    const Vmed = derived.grainVolume();
+    if (s <= 1e-9) return Vmed;                     // uniform sand: no spread
+    const a = 3 * s;
+    const lo = Math.log(values.minGrainRatio) / s;
+    const hi = Math.log(values.maxGrainRatio) / s;
+    const mass = normalCdf(hi) - normalCdf(lo);
+    if (mass <= 1e-12) return Vmed;                 // degenerate window
+    const shifted = normalCdf(hi - a) - normalCdf(lo - a);
+    return Vmed * Math.exp(4.5 * s * s) * (shifted / mass);
   },
   minGrainDiameter() {
     return values.minGrainRatio * values.medianDiameter;
