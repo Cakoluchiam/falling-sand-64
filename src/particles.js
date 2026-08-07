@@ -116,12 +116,21 @@ export class Particles {
   //
   // Centre-inside rather than spheres-touching, so a grain resting *against* a
   // lump -- a full radius outside it -- is never caught.
+  //
+  // ⚠ "In flight" means BALLISTIC specifically, not merely "not resting". Once
+  // the contact solver existed there was a third phase in between, and a lump
+  // sitting on the pile being solved rather than asleep is exactly the case
+  // this must not catch: lumps heap up where the sand is landing, so a lump
+  // that goes on eating after it arrives drains the pour without bound. That
+  // was measured at 1% climbing to 27% over 80 s before the rule was
+  // restricted to falling lumps, and reading the phase as "not resting" would
+  // have quietly reintroduced it the moment PHASE_AWAKE started being used.
   fallingClumpContaining(i) {
     const { px, py, pz, radius, phase, aggs } = this;
     const x = px[i], y = py[i], z = pz[i];
     for (let a = 0; a < this.aggCount; a++) {
       const c = aggs[a];
-      if (phase[c] === PHASE_RESTING) continue;
+      if (phase[c] !== PHASE_BALLISTIC) continue;
       const R = radius[c];
       const dy = py[c] - y;
       if (dy > R || dy < -R) continue;   // cheap reject: most lumps are elsewhere

@@ -273,7 +273,12 @@ console.log('\nthe emitted ribbon and the integrator agree on the same curve');
       // Retire what has landed, so the store never fills and stops the pour.
       for (let k = P.count - 1; k >= 0; k--) {
         const i = P.live[k];
-        if (P.phase[i] === PHASE_RESTING) P.free(i);
+        // Anything that has left free flight has landed as far as this test is
+        // concerned. It used to check for PHASE_RESTING, which stopped being
+        // the landing phase when the contact solver introduced PHASE_AWAKE
+        // between the two -- leaving nothing retired, the store full, and the
+        // pour stalled part way through the measurement.
+        if (P.phase[i] !== PHASE_BALLISTIC) P.free(i);
       }
       nz.step(h, s * h, P, values);
     }

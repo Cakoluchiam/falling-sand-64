@@ -4,9 +4,10 @@ import { CONFIG, values, derived, SCHEMA, domainBounds, enforceConstraints, SAND
 import { Rng } from './rng.js';
 import { Noise, CurlField } from './noise.js';
 import { SHARED_MEMORY_AVAILABLE } from './shared.js';
-import { Particles, PHASE_RESTING } from './particles.js';
+import { Particles, PHASE_BALLISTIC } from './particles.js';
 import { Nozzle } from './source.js';
 import { stepBallistic } from './ballistic.js';
+import { ContactSolver } from './contact.js';
 import { HexField, relaxRateFromHalfLife } from './hexfield.js';
 import { initGL, GLUnavailableError, resizeToDisplay } from './gl/context.js';
 import { OrbitCamera } from './gl/camera.js';
@@ -15,6 +16,11 @@ import { TerrainRenderer } from './gl/terrain.js';
 import { buildPanel } from './ui.js';
 
 const DEG = Math.PI / 180;
+
+// Below this, a grain counts as not moving for the purpose of deciding a run
+// has finished. A millimetre a second is far under anything visible and well
+// over the residual jitter of a contact being held.
+const SETTLED_SPEED = 0.001;
 
 const LIGHT_DIR = (() => {
   const d = new Float32Array([0.45, 0.82, 0.35]);
@@ -49,6 +55,7 @@ class App {
     this.field = new HexField(CONFIG.gridW, CONFIG.gridH, CONFIG.cellSpacing);
     this.renderer = new GrainRenderer(gl, CONFIG.grainCapacity);
     this.terrain = new TerrainRenderer(gl, this.field);
+    this.contacts = new ContactSolver(CONFIG.grainCapacity);
     this._surf = new Float64Array(4);
 
     this.rng = new Rng(values.seed);
@@ -94,6 +101,12 @@ class App {
   // explicit one: at the short end of the half-life slider a 1/60 s step
   // overshoots and rings, where 1/240 s does not.
   substep(h) {
+    this.contacts.step(this.particles, this.field, h, {
+      gravity: values.gravity,
+      friction: values.friction,
+      restitution: values.restitution,
+      iterations: CONFIG.contactIterations,
+    });
     if (!values.relaxation) return;
     this.field.relax(
       h,
@@ -108,8 +121,17 @@ class App {
   isSettled() {
     if (values.flowRate <= 0) return false;   // an empty nozzle is not a finished run
     const P = this.particles;
+    // ⚠ A speed query, not the sleep rule. Until M3's sleeping step lands,
+    // nothing is ever marked PHASE_RESTING -- grains stay awake in the contact
+    // solver indefinitely -- so testing the phase here would mean auto-restart
+    // silently never fires again. Asking whether anything is actually moving
+    // answers the question this method is for without pre-empting the
+    // hysteresis and wake rule that sleeping needs.
     for (let k = 0; k < P.count; k++) {
-      if (P.phase[P.live[k]] !== PHASE_RESTING) return false;
+      const i = P.live[k];
+      if (P.phase[i] === PHASE_BALLISTIC) return false;
+      const vx = P.vx[i], vy = P.vy[i], vz = P.vz[i];
+      if (vx * vx + vy * vy + vz * vz > SETTLED_SPEED * SETTLED_SPEED) return false;
     }
     const storeFull = P.count >= P.capacity;
     const pourDone = !values.continuousPour && this.nozzle.emittedVolume >= derived.dropVolume();
@@ -207,7 +229,9 @@ class App {
       curl: this.curl,
       halfW: CONFIG.domainWidth / 2,
       halfD: CONFIG.domainDepth / 2,
+      handoffDepth: CONFIG.handoffDepth,
       tmp: this._tmp,
+      surf: this._surf,
     });
     this.lostVolume += lost;
     this.eatenVolume += eaten;

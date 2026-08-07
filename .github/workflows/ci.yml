@@ -50,7 +50,7 @@ jobs:
         # order is what decides dispatch order. It costs nothing to be right
         # about it in advance.
         suite: [clumps-spread, clumps-rate, clumps-stream,
-                hexfield, hash, modules, smoke, sizes, pour]
+                hexfield, contact, hash, modules, smoke, sizes, pour]
     name: ${{ matrix.suite }} (node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v4

@@ -47,6 +47,18 @@ export const CONFIG = {
   maxBallisticStep: 1 / 120,
   maxBallisticIters: 32,
 
+  // How close to the surface, in grain diameters, a grain gets handed from
+  // free flight to the contact solver. A numerical safety margin rather than a
+  // physical knob, which is why it lives here and not on the panel: too small
+  // and a grain resolves its first contact already deep inside the surface,
+  // too large and grains join the solver long before they need to be there and
+  // pay for it every substep. The handoff also carries a speed term, so this
+  // only has to cover size.
+  handoffDepth: 2,
+  // Constraint iterations per substep. Two is the plan's figure; one is
+  // visibly softer under stacking and three buys little.
+  contactIterations: 2,
+
   // Turbulence lookup grid. Node budget rather than a fixed per-axis count, so
   // the cells stay roughly cubic as the field's aspect ratio changes with pour
   // height. See CurlField for why the curl is gridded at all.

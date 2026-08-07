@@ -36,6 +36,7 @@ const SUITES = [
   ['pour', 'pour.mjs', 'pour angle aims, pour spread widens, launch geometry'],
   ['hexfield', 'hexfield.mjs', 'lattice geometry, sampling continuity, volume ledger, relaxation'],
   ['hash', 'hash.mjs', 'contact broad phase: hierarchy, counting sort, exactly-once pairs'],
+  ['contact', 'contact.mjs', 'grain-surface contact against the analytic slope'],
   // `clumps` is minutes where the rest are seconds, so it is split into three
   // parts that CI runs as separate jobs. A fourth element is the argument
   // handed to the script; everything else runs whole. The parts share one file
