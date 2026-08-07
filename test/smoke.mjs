@@ -193,7 +193,16 @@ for (let k = 0; k < P3.count; k++) {
 }
 const spread = ymax - ymin;
 check('one frame of emission is spread vertically', P3.count > 5 && spread > 1e-4, `spread ${spread.toExponential(2)} over ${P3.count} grains`);
-check('no grain is above the nozzle', ymax <= values.nozzleHeight + 1e-9, `${ymax} vs ${values.nozzleHeight}`);
+// ⚠ The ceiling is the aperture rim, not the nozzle plane. The aperture is a
+// disc square to the pour axis, so tilting the pour tilts the disc and lifts
+// its upper edge by `apertureRadius * sin(pourAngle)` -- 5 mm at the default
+// 1 cm aperture and 30 degrees. This read `<= nozzleHeight` while the pour
+// default was straight down, which made a statement about the backdate never
+// carrying a grain upward look like a statement about the nozzle plane. Only
+// the first was ever intended, and only the first is true of a tilted pour.
+const rimLift = values.apertureRadius * Math.sin(values.pourAngle * Math.PI / 180);
+check('no grain is above the aperture rim', ymax <= values.nozzleHeight + rimLift + 1e-9,
+  `${ymax.toFixed(6)} vs ${(values.nozzleHeight + rimLift).toFixed(6)}`);
 
 // Grains are always solid particles. Size never promotes one to a clump --
 // clumps are a separate thing representing many grains bound together, and the

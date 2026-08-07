@@ -17,6 +17,14 @@ values.clumpSize = 17.1;
 values.clumpSorting = Math.log(1.5) / 2;
 values.continuousPour = true;
 values.surgeDepth = 0;
+// ⚠ Pinned like the rest, and it is the one that was missing. Every tolerance
+// below is a counting tolerance, and clump counts scale with the volume poured
+// -- so this suite's entire error budget rode on a panel default. When the
+// user-facing flow rate dropped from 400 g/s to 50 for watchability, counts
+// fell eightfold and three unrelated checks failed at once, none of them
+// because anything about clumps had changed. Sections that deliberately vary
+// the rate save and restore it around themselves.
+values.flowRate = 400 / (SAND_PARTICLE_DENSITY * 1000);
 const dt = 1 / 60;
 
 console.log('setup');
@@ -266,30 +274,45 @@ function rateAt(frac, secs = 120, seeds = 4) {
   for (let s = 1; s <= seeds; s++) n += pour(s * 13, secs).clumps;
   return { perSec: n / (secs * seeds), n };
 }
-// ⚠ Measured at 2% -> 8%, not at the 0.5% -> 2% this used to use, and the
-// reason is precision rather than realism.
+// ⚠ Pinned, not inherited from the panel defaults.
 //
-// The statistic is a ratio of two clump counts, so its noise is set by how
-// many clumps were counted -- and the run cost is set by grain emission, which
-// does not change with clump fraction. Counting at a higher fraction is
-// therefore strictly cheaper per unit precision. Measured over five
-// independent 4-seed groups, the pooled ratio has sd 0.251 at 0.5% -> 2% and
-// **0.150** at 2% -> 8%, for the same compute.
+// This statistic is a ratio of two clump counts, so its precision is set by
+// how many clumps get counted -- which depends on flow rate and clump size.
+// Leaving those on the UI defaults means a cosmetic change to the panel
+// silently changes this test's error bar, and that is exactly how it came to
+// be flaky: it carried a band that was comfortable under one set of defaults
+// and 1.6 sigma under the next. Measured here rather than assumed, so these
+// three lines are part of the measurement and not decoration.
+values.flowRate = 50 / (SAND_PARTICLE_DENSITY * 1000);
+values.clumpSize = 12;
+values.clumpSorting = Math.log(1.5) / 2;
+
+// Measured at 10% -> 40%. The window is chosen for precision, not realism:
+// the run cost is grain emission and does not vary with clump fraction, so
+// counting where clumps are plentiful is strictly cheaper per unit precision.
 //
-// The old tolerance of +-0.4 on the low window was 1.6 sigma, which fails
-// about one run in six; it had simply been lucky. Widening it to a safe 3
-// sigma there would have meant +-0.75, a test that could no longer tell 4x
-// from 3.3x. At 2% -> 8%, +-0.45 is the same 3 sigma and a much sharper claim.
+// Pooled ratio over five independent 4-seed groups, at the flow rate above:
 //
-// Both windows are unbiased -- means of 3.995 and 4.025 against 4.00 -- so the
-// scaling law itself is sound and this is purely about how precisely it can be
-// pinned for a given amount of CPU.
-const r0 = rateAt(0, 30, 2), r1 = rateAt(0.02), r2 = rateAt(0.08);
+//     0.5% ->  2%   sd 0.25   (at the old 400 g/s flow)
+//       2% ->  8%   sd 0.45
+//      10% -> 40%   sd 0.10
+//
+// The middle row is the trap. It was sd 0.15 at 400 g/s, and dropping the
+// user-facing flow rate to 50 g/s costs eight-fold in clump counts -- so
+// keeping that window would have left a +-0.45 band sitting at one sigma,
+// failing about a third of runs, purely because a presentation default moved.
+//
+// +-0.4 against sd 0.10 is nominally four sigma. That deliberately exceeds
+// three: an sd estimated from five groups is itself uncertain by roughly a
+// third, so a band drawn tight against the point estimate would be a band
+// drawn against noise. It is still a 10% claim about a scaling law, and every
+// window measured is unbiased -- means of 3.995, 4.139 and 4.018 against 4.00.
+const r0 = rateAt(0, 30, 2), r1 = rateAt(0.10), r2 = rateAt(0.40);
 const ratio = r2.perSec / r1.perSec;
-console.log(`  0% -> ${r0.perSec.toFixed(2)}/s,  2% -> ${r1.perSec.toFixed(2)}/s (n=${r1.n}),  8% -> ${r2.perSec.toFixed(2)}/s (n=${r2.n})`);
-console.log(`  ratio ${ratio.toFixed(2)}  (want 4.00, 3-sigma band 0.45)`);
+console.log(`  0% -> ${r0.perSec.toFixed(2)}/s,  10% -> ${r1.perSec.toFixed(2)}/s (n=${r1.n}),  40% -> ${r2.perSec.toFixed(2)}/s (n=${r2.n})`);
+console.log(`  ratio ${ratio.toFixed(2)}  (want 4.00, measured sd 0.10, band 0.40)`);
 check('zero emits no clumps', r0.n === 0);
-check('rate scales with the fraction slider', Math.abs(ratio - 4) < 0.45, ratio.toFixed(2));
+check('rate scales with the fraction slider', Math.abs(ratio - 4) < 0.4, ratio.toFixed(2));
 values.clumpFraction = 0.01;
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

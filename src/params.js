@@ -83,9 +83,14 @@ export const values = {
   autoRestartDelay: 2,
 
   // --- Source ---
-  // Solid volume per second. 1.509e-4 m^3/s = 400 g/s = a 4 kg bucket in 10 s.
-  flowRate: 400 / (SAND_PARTICLE_DENSITY * 1000),
-  apertureRadius: 0.02,
+  // Solid volume per second, defaulted for a *watchable* pour rather than a
+  // fast one. 400 g/s empties the grain budget in about 1.2 s, which is less
+  // time than it takes to see anything happen; 50 g/s spreads the same 200k
+  // grains over about ten seconds. The slider still reaches 20 kg/s. Note the
+  // test suites that care about throughput set this themselves rather than
+  // inheriting it, so this is a presentation choice and not a physics one.
+  flowRate: 50 / (SAND_PARTICLE_DENSITY * 1000),
+  apertureRadius: 0.01,
   // A flat opening the sand passes through, versus a source with volume. The
   // disc is the cleaner instrument -- one knob, one effect -- so it is the
   // default; see the note in Nozzle._spawn for how they differ.
@@ -103,10 +108,13 @@ export const values = {
   // fixed direction, the way tipping a bucket sends sand a particular way, and
   // moves where the pile builds. `pourSpread` is how far individual grains
   // scatter about that axis, and it is what actually makes the stream diverge.
-  // Divergence comes from the spread, not the tilt, so the default is a
-  // straight-down pour that still fans out.
-  pourAngle: 0,
-  pourSpread: 8,
+  // Divergence comes from the spread, not the tilt. The defaults are
+  // nonetheless a tilted, well-spread pour: a straight vertical fall into a
+  // circular landing zone is the symmetric case, and symmetric is exactly what
+  // hides an asymmetric bug. A hand tipping a bucket is both the more
+  // realistic starting point and the more revealing one.
+  pourAngle: 30,
+  pourSpread: 15,
   surgePeriod: 0.6,
   surgeDepth: 0.5,
   continuousPour: true,
@@ -157,10 +165,21 @@ export const values = {
   //
   // Fraction of poured volume that arrives as clumps. Frequency falls out of
   // this and the clump size, which is more intuitive than setting a rate.
-  clumpFraction: 0.01,
+  //
+  // Defaulted high, at 10%, because 1% puts a clump on screen every few
+  // seconds and the clump path is the least-exercised part of the source.
+  // Something a viewer sees only occasionally is also something a bug hides
+  // in. The slider reaches 50%.
+  clumpFraction: 0.1,
   // Diameter as a multiple of the median grain, so it keeps its meaning as
   // grain size moves. Shown in mm, which updates with the median.
-  clumpSize: 17.1,
+  //
+  // 12x the median is 12 mm of default sand. Smaller than the 17.1x this used
+  // to be, and chosen for frequency rather than realism: volume is cubic, so
+  // dropping the width by a third gives nearly three times as many clumps out
+  // of the same volume fraction. More arrivals is what makes the behaviour
+  // observable, both on screen and in the statistics the clumps suite pools.
+  clumpSize: 12,
   clumpSorting: Math.log(1.5) / 2,
 
   // Impact speed at which a median clump breaks. Replaces a raw cohesion gain,
@@ -467,7 +486,7 @@ export const SCHEMA = [
 
   {
     key: 'clumpFraction', group: 'Clumps', label: 'Sand arriving as clumps',
-    units: [{ unit: '%', scale: 100 }], min: 0.05, max: 10, log: true, logZero: true,
+    units: [{ unit: '%', scale: 100 }], min: 0.05, max: 50, log: true, logZero: true,
     help: 'How much of the poured sand arrives already stuck together. How often clumps appear follows from this and the clump size — the Derived panel shows the resulting rate.',
   },
   // Stored as a multiple of the median so the slider range is scale-free, but

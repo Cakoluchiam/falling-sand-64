@@ -1,7 +1,7 @@
 const base = new URL('../src/', import.meta.url).href;
 const { Rng } = await import(base + 'rng.js');
 const { Noise } = await import(base + 'noise.js');
-const { values, derived } = await import(base + 'params.js');
+const { values, derived, SAND_PARTICLE_DENSITY } = await import(base + 'params.js');
 const { Particles, PHASE_BALLISTIC, PHASE_RESTING } = await import(base + 'particles.js');
 const { Nozzle } = await import(base + 'source.js');
 const { stepBallistic } = await import(base + 'ballistic.js');
@@ -253,6 +253,18 @@ console.log('\nthe emitted ribbon and the integrator agree on the same curve');
   // End to end: pour into a flat field and look for any band, thick or thin.
   // Measuring only for holes is how the first round of this missed a 21%
   // ripple of *dense* bands sitting right where the holes had been.
+  //
+  // ⚠ Flow rate and clump fraction are pinned, not inherited. This metric is a
+  // grain *density* per height bin, so its noise floor is set by how many
+  // grains are in the stream: when the panel default dropped from 400 g/s to
+  // 50, every bin fell under the occupancy threshold below, the sample set
+  // emptied, and the check reported `NaN% rms` -- which is not a failure
+  // anyone can read. Clumps are zeroed because a lump is one particle standing
+  // in for thousands of grains, and this counts particles.
+  const bandingFlow = values.flowRate, bandingClumps = values.clumpFraction;
+  values.flowRate = 400 / (SAND_PARTICLE_DENSITY * 1000);
+  values.clumpFraction = 0;
+
   const bandingAt = (h) => {
     const P = new Particles(400000);
     const nz = new Nozzle(new Rng(31), new Noise(31));
@@ -282,16 +294,21 @@ console.log('\nthe emitted ribbon and the integrator agree on the same curve');
       hi = Math.max(hi, r); lo = Math.min(lo, r);
       sum += (r - 1) ** 2; n++;
     }
-    return { hi, lo, rms: Math.sqrt(sum / n) };
+    return { hi, lo, n, rms: Math.sqrt(sum / n) };
   };
   for (const h of [1 / 120, 0.16]) {
     const r = bandingAt(h);
     console.log(`  step ${h.toFixed(4)} s | densest ${r.hi.toFixed(2)}x, thinnest ${r.lo.toFixed(2)}x,` +
-      ` ripple ${(r.rms * 100).toFixed(1)}% rms`);
+      ` ripple ${(r.rms * 100).toFixed(1)}% rms over ${r.n} bins`);
+    // The sample count is asserted before the ripple, so a stream too thin to
+    // measure reports that rather than dividing by zero and claiming NaN.
+    check(`  there is enough stream to measure at ${h.toFixed(4)} s`, r.n >= 100, `${r.n} bins`);
     check(`  the stream is smooth at ${h.toFixed(4)} s`, r.rms < 0.04 && r.hi < 1.2 && r.lo > 0.8,
       `${(r.rms * 100).toFixed(1)}% rms, ${r.hi.toFixed(2)}x / ${r.lo.toFixed(2)}x`);
   }
   values.apertureRadius = 0.02;
+  values.flowRate = bandingFlow;
+  values.clumpFraction = bandingClumps;
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
