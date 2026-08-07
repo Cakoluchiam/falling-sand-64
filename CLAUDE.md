@@ -2,6 +2,16 @@
 
 How code in this repo is written. **Design decisions live in `PLAN.md`** — read that before changing behaviour, especially the entries marked ⚠, which are reversals of earlier designs and record why the earlier version was wrong.
 
+## Before starting a milestone, re-read everything
+
+**Read `PLAN.md` end to end, and read the merged PRs since the last milestone** — `gh pr list --state merged --limit 10`, then `gh pr view <n>` for each. Not the sections that look relevant. All of it.
+
+This is a standing instruction rather than advice because **conversations are compacted between milestones**. A session beginning M(n+1) holds a summary of M(n), and a summary keeps conclusions while dropping the arguments and measurements that produced them — which are exactly what you need in order to notice that a conclusion has since stopped being true. The PR bodies are where the numbers live; the plan is where the reasoning lives; neither survives compaction on its own.
+
+The reason to expect this to pay off every time: **every milestone so far has opened by finding claims in `PLAN.md` that an earlier milestone had quietly falsified.** M3 found four. Reviewing M4 found five more — and one of those, that `grainTop`/`grainBottom` come free out of the spatial hash, was falsified by M3's own hierarchical grid *in the session that built it*, because the plan's costing assumed the flat grid it replaced. Nothing flags this class of drift. There is no test for "a sentence two milestones away is now wrong." It is found by reading, or it is found by building the wrong thing.
+
+The changelog at the top of `PLAN.md` is the fastest orientation, but it is not a substitute for the milestone sections — it records *that* something changed, while the traps live in the bodies, phrased as confident instructions.
+
 ## Constraints that are not negotiable
 
 - **Zero dependencies, no build step.** ES modules served as-is. There is no bundler, no transpiler, no `package.json`. The shipped artifact is a static site that runs on any modern browser with nothing installed.
