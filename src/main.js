@@ -106,6 +106,10 @@ class App {
       friction: values.friction,
       restitution: values.restitution,
       iterations: CONFIG.contactIterations,
+      // Level 0 of the broad-phase hierarchy. The median grain is the right
+      // scale: finer wastes levels on empty cells, coarser piles ordinary
+      // grains into one bucket and the 27-cell neighbourhood stops being cheap.
+      baseCell: values.medianDiameter,
     });
     if (!values.relaxation) return;
     this.field.relax(
