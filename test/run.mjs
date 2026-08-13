@@ -36,7 +36,12 @@ const SUITES = [
   ['pour', 'pour.mjs', 'pour angle aims, pour spread widens, launch geometry'],
   ['hexfield', 'hexfield.mjs', 'lattice geometry, sampling continuity, volume ledger, relaxation'],
   ['hash', 'hash.mjs', 'contact broad phase: hierarchy, counting sort, exactly-once pairs'],
-  ['contact', 'contact.mjs', 'grain-surface contact against the analytic slope'],
+  // `contact` is split for the same reason as `clumps` below: it grew past a
+  // minute and would otherwise set the matrix wall clock on its own.
+  ['contact-surface', 'contact.mjs', 'a grain on the terrain: friction angle, sliding, bounce', 'surface'],
+  ['contact-pairs', 'contact.mjs', 'grain against grain: separation, weighting, stacks, piles', 'pairs'],
+  ['contact-sleep', 'contact.mjs', 'retiring settled grains, and waking them again', 'sleep'],
+  ['contact-repose', 'contact.mjs', 'friction holds the pile up, and the footprint is round', 'repose'],
   // `clumps` is minutes where the rest are seconds, so it is split into three
   // parts that CI runs as separate jobs. A fourth element is the argument
   // handed to the script; everything else runs whole. The parts share one file

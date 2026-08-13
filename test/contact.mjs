@@ -20,6 +20,24 @@ import { Rng } from '../src/rng.js';
 let failures = 0;
 const check = (n, c, x = '') => { console.log(c ? `  ok   ${n}` : `  FAIL ${n} ${x}`); if (!c) failures++; };
 
+// Split for CI, the same way and for the same reason as `clumps`: one file
+// with named entry points rather than four files, because every case below is
+// calibrated against the constants and helpers at the top of this one and
+// copying those into four places is how they drift apart. `node
+// test/contact.mjs` with no argument still runs everything.
+//
+//   surface  a grain against the terrain: friction angle, sliding, restitution
+//   pairs    grain against grain: separation, weighting, stacks, dense piles
+//   sleep    retiring settled grains, and waking them again
+//   repose   what the pile actually does -- the milestone's real question
+const only = process.argv[2];
+const PARTS = ['surface', 'pairs', 'sleep', 'repose'];
+if (only && !PARTS.includes(only)) {
+  console.error(`unknown part "${only}". Known: ${PARTS.join(', ')}`);
+  process.exit(2);
+}
+const wants = (name) => !only || only === name;
+
 const G = 9.81;
 const R = 0.0005;                 // 1 mm grain
 const DEG = Math.PI / 180;
@@ -96,8 +114,8 @@ function slideTest(deg, mu, restitution, dt, substeps) {
   return { distance: dist, accel, escaped };
 }
 
+if (wants('surface')) {
 console.log('a grain sticks below the friction angle and slides above it');
-{
   const mu = 0.5;
   const frictionAngle = Math.atan(mu) / DEG;
   console.log(`  mu = ${mu}, so the friction angle is ${frictionAngle.toFixed(2)}°`);
@@ -114,8 +132,8 @@ console.log('a grain sticks below the friction angle and slides above it');
   }
 }
 
+if (wants('surface')) {
 console.log('\nthe transition is at atan(mu), across the friction slider');
-{
   const dt = 1 / 240;
   for (const mu of [0.2, 0.5, 0.9, 1.2]) {
     const want = Math.atan(mu) / DEG;
@@ -134,8 +152,8 @@ console.log('\nthe transition is at atan(mu), across the friction slider');
   }
 }
 
+if (wants('surface')) {
 console.log('\nsliding acceleration is g(sin θ − μ cos θ)');
-{
   const dt = 1 / 240;
   for (const [deg, mu] of [[40, 0.3], [45, 0.5], [50, 0.2], [35, 0.1]]) {
     const want = G * (Math.sin(deg * DEG) - mu * Math.cos(deg * DEG));
@@ -148,8 +166,8 @@ console.log('\nsliding acceleration is g(sin θ − μ cos θ)');
   }
 }
 
+if (wants('surface')) {
 console.log('\nnone of it depends on the timestep');
-{
   // ⚠ The point of the whole positional-friction design. A viscous damping
   // would put dt in the answer, and the repose angle this project measures
   // would be a property of the integrator rather than of the sand. Sixteenfold
@@ -178,8 +196,8 @@ console.log('\nnone of it depends on the timestep');
     stuck.map((d) => (d * 1000).toFixed(4)).join(', '));
 }
 
+if (wants('surface')) {
 console.log('\nrestitution bounces an impact but not a resting grain');
-{
   const dt = 1 / 240;
   // Drop from a height onto flat ground and measure the rebound.
   const drop = (e) => {
@@ -251,8 +269,8 @@ function twoGrains(ri, rj, gap) {
   return { P, a, b };
 }
 
+if (wants('pairs')) {
 console.log('\noverlapping grains separate to exactly touching');
-{
   const field = emptyField();
   for (const [ri, rj, overlap] of [[R, R, 0.4], [R, 3 * R, 0.6], [R, R, 0.95]]) {
     const { P, a, b } = twoGrains(ri, rj, (ri + rj) * (1 - overlap));
@@ -265,8 +283,8 @@ console.log('\noverlapping grains separate to exactly touching');
   }
 }
 
+if (wants('pairs')) {
 console.log('\nthe correction is inverse-mass weighted, so the big grain barely moves');
-{
   const field = emptyField();
   for (const ratio of [2, 4, 8]) {
     // Deliberately overlapping. At `gap = 0` the centres sit exactly a sum of
@@ -290,8 +308,8 @@ console.log('\nthe correction is inverse-mass weighted, so the big grain barely 
   }
 }
 
+if (wants('pairs')) {
 console.log('\nthe pair centre of mass does not move');
-{
   // ⚠ Nothing external acts during the pair pass, so any drift here is the
   // solver pushing the pile somewhere by itself -- the kind of error that
   // looks like physics and would be invisible in a pile of 200k.
@@ -313,8 +331,8 @@ console.log('\nthe pair centre of mass does not move');
   }
 }
 
+if (wants('pairs')) {
 console.log('\ngrains bounce off each other at the restitution setting');
-{
   // ⚠ Closing at 0.2 m/s, not the 2 m/s tried first, and the reason is a real
   // limit rather than a test detail. The broad phase runs on predicted
   // positions, so a pair closing faster than about a grain diameter per
@@ -338,8 +356,8 @@ console.log('\ngrains bounce off each other at the restitution setting');
   }
 }
 
+if (wants('pairs')) {
 console.log('\na column as deep as the active layer holds itself up');
-{
   // ⚠ Depth 2 and 4, not 8, and that is a statement about the architecture
   // rather than a softened test. Position-based dynamics propagates support
   // one contact per iteration, so a tall chain compresses until the overlap
@@ -410,8 +428,8 @@ console.log('\na column as deep as the active layer holds itself up');
     fine < coarse / 5, `${(coarse / fine).toFixed(1)}x for a 4x rate`);
 }
 
+if (wants('pairs')) {
 console.log('\nno overlap survives a dense random pile');
-{
   // The end-to-end claim, against a brute-force sweep rather than the solver's
   // own bookkeeping.
   // A wide shallow slab, about three grains deep -- the shape the active layer
@@ -464,8 +482,8 @@ console.log('\nno overlap survives a dense random pile');
   check('  and nothing is materially through the floor', sunk === 0, `${sunk} grains, deepest ${(deepest * 1e6).toFixed(1)} µm`);
 }
 
+if (wants('pairs')) {
 console.log('\na deep heap cannot press grains through the floor');
-{
   // ⚠ Deep and crowded on purpose, and neither the columns nor the slab above
   // can stand in for it. The failure needs a grain that begins a substep clear
   // of the surface and is driven into it by a pair correction — a column only
@@ -546,8 +564,8 @@ const sleepOpts = (hz, mu = 0.5, e = 0) => ({
   ...SLEEP, wakeDepth: 0.2 * G / (hz * hz), stirSpeed: SLEEP.sleepSpeed * 10,
 });
 
+if (wants('sleep')) {
 console.log('\ngrains that stop moving retire from the solver');
-{
   const field = tiltedField(0);
   const P = new Particles(16);
   const solver = new ContactSolver(16);
@@ -567,8 +585,8 @@ console.log('\ngrains that stop moving retire from the solver');
   check('  and does so promptly', firstAsleep >= 0 && firstAsleep < 240, `${firstAsleep} substeps`);
 }
 
+if (wants('sleep')) {
 console.log('\nnothing falls asleep in mid-air');
-{
   // ⚠ The condition that is easy to omit. A grain thrown upward is motionless
   // at the top of its arc, so a speed test on its own retires it there and
   // leaves it hanging. Sleep needs contact as well as stillness.
@@ -589,8 +607,8 @@ console.log('\nnothing falls asleep in mid-air');
     `slept at y = ${(P.py[i] * 1000).toFixed(1)} mm`);
 }
 
+if (wants('sleep')) {
 console.log('\na sleeping grain still holds up what lands on it');
-{
   // Sleepers stay in the broad phase and act as immovable. Drop this test and
   // the surface layer sinks through the settled pile beneath it.
   const field = tiltedField(0);
@@ -619,8 +637,8 @@ console.log('\na sleeping grain still holds up what lands on it');
     `moved ${((P.py[base] - restingY) * 1e6).toFixed(1)} µm`);
 }
 
+if (wants('sleep')) {
 console.log('\nan intruded sleeper wakes, a jostled one does not');
-{
   const field = tiltedField(0);
   const P = new Particles(16);
   const solver = new ContactSolver(16);
@@ -640,8 +658,8 @@ console.log('\nan intruded sleeper wakes, a jostled one does not');
   check('  a real intrusion wakes it', P.phase[a] === PHASE_AWAKE);
 }
 
+if (wants('sleep')) {
 console.log('\nsleeping does not change where the pile ends up');
-{
   // ⚠ The check that sleeping is an optimisation rather than a physics change.
   // A too-eager sleep rule freezes a pile mid-collapse and the result looks
   // like a steeper repose angle -- which this project measures, so it would be
@@ -693,6 +711,152 @@ console.log('\nsleeping does not change where the pile ends up');
     `${(on.p90Y * 1000).toFixed(3)} vs ${(off.p90Y * 1000).toFixed(3)} mm`);
   check('  and it spreads the same distance', Math.abs(on.p90R / off.p90R - 1) < 0.08,
     `${(on.p90R * 1000).toFixed(2)} vs ${(off.p90R * 1000).toFixed(2)} mm`);
+}
+
+// -------------------------------------------------------------- repose ----
+
+// Pour a fixed mass onto a flat floor from just above it, let it settle, and
+// describe the heap that results. Emitting from close range keeps this about
+// the contact solver rather than about the nozzle and the air.
+function heap(mu, { n = 2600, hz = 240, seconds = 6, seed = 3 } = {}) {
+  const field = tiltedField(0);
+  const rng = new Rng(seed);
+  const P = new Particles(n + 8);
+  const solver = new ContactSolver(n + 8);
+  const o = {
+    gravity: G, friction: mu, restitution: 0.2, iterations: 2, baseCell: BASE,
+    ...SLEEP, wakeDepth: 0.2 * G / (hz * hz), stirSpeed: SLEEP.sleepSpeed * 10,
+  };
+  let spawned = 0;
+  const perStep = n / (seconds * hz * 0.55);      // done pouring at ~55% through
+  let debt = 0;
+  for (let s = 0; s < seconds * hz; s++) {
+    debt += perStep;
+    while (debt >= 1 && spawned < n) {
+      debt -= 1;
+      const i = P.alloc();
+      if (i < 0) break;
+      const r = R * (0.6 + rng.next() * 0.8);
+      P.radius[i] = r; P.vol[i] = (Math.PI / 6) * (2 * r) ** 3;
+      // A narrow column, so the heap builds from a point source.
+      const a = rng.next() * Math.PI * 2, rad = Math.sqrt(rng.next()) * 0.002;
+      P.px[i] = Math.cos(a) * rad; P.pz[i] = Math.sin(a) * rad;
+      P.py[i] = 0.02 + rng.next() * 0.002;
+      P.vy[i] = -0.4;
+      P.phase[i] = PHASE_AWAKE;
+      spawned++;
+    }
+    solver.step(P, field, 1 / hz, o);
+  }
+
+  // Flank angle by least squares on height against radius, over the body of
+  // the heap. The apex and the outermost skirt are both unrepresentative --
+  // one is a single grain, the other is scattered strays.
+  const pts = [];
+  let peak = 0;
+  for (let k = 0; k < P.count; k++) {
+    const i = P.live[k];
+    peak = Math.max(peak, P.py[i]);
+    pts.push({ r: Math.hypot(P.px[i], P.pz[i]), y: P.py[i] });
+  }
+  // Upper envelope: the tallest grain in each radial bin is the surface.
+  const BINS = 40, maxR = Math.max(...pts.map((q) => q.r));
+  const env = new Float64Array(BINS).fill(-1);
+  for (const q of pts) {
+    const b = Math.min(BINS - 1, Math.floor(q.r / maxR * BINS));
+    if (q.y > env[b]) env[b] = q.y;
+  }
+  let sx = 0, sy = 0, sxx = 0, sxy = 0, m = 0;
+  for (let b = 0; b < BINS; b++) {
+    if (env[b] < 0) continue;
+    const rr = (b + 0.5) / BINS * maxR, yy = env[b];
+    if (yy < peak * 0.15 || yy > peak * 0.85) continue;   // skip apex and skirt
+    sx += rr; sy += yy; sxx += rr * rr; sxy += rr * yy; m++;
+  }
+  const slope = m > 1 ? (m * sxy - sx * sy) / (m * sxx - sx * sx) : 0;
+  const angle = Math.atan(Math.abs(slope)) / DEG;
+
+  // Six-fold ripple: the lattice printing itself onto the footprint. Compare
+  // the mean radius of the heap in each of twelve bearings.
+  const SECT = 12;
+  const bearings = new Float64Array(SECT);
+  for (let k = 0; k < P.count; k++) {
+    const i = P.live[k];
+    if (P.py[i] < peak * 0.1) continue;
+    const th = Math.atan2(P.pz[i], P.px[i]);
+    const b = Math.min(SECT - 1, Math.floor((th + Math.PI) / (2 * Math.PI) * SECT));
+    const rr = Math.hypot(P.px[i], P.pz[i]);
+    if (rr > bearings[b]) bearings[b] = rr;
+  }
+  let bm = 0;
+  for (let b = 0; b < SECT; b++) bm += bearings[b];
+  bm /= SECT;
+  let dev = 0;
+  for (let b = 0; b < SECT; b++) dev = Math.max(dev, Math.abs(bearings[b] - bm) / bm);
+
+  return { angle, peak, grains: P.count, asleep: solver.asleep, bearingSpread: dev, maxR };
+}
+
+if (wants('repose')) {
+console.log('friction holds material up, and the footprint is round');
+  // ⚠ What this can and cannot establish at M3, stated plainly, because the
+  // difference matters more than the numbers.
+  //
+  // **It cannot measure a repose angle yet.** The pile here is made entirely
+  // of grains, and grains arriving at a realistic pour speed tunnel straight
+  // through it: the broad phase runs on predicted positions, so a relative
+  // closing speed above about a grain diameter per substep is invisible, which
+  // is 0.24 m/s at 240 Hz against arrivals at 0.75 m/s. Measured, the heap
+  // stays a 2 mm puddle 50 mm wide at 240 Hz and only starts to build at 960.
+  //
+  // Two things fix that, and neither belongs to M3. The substep rate is one --
+  // `g*dt^2` again. **Absorption is the other and is the more important**: in
+  // the finished design the body of the pile is heightfield, which is
+  // continuous and cannot be tunnelled through, with a two-grain active layer
+  // on top. The all-grain tower tested here is exactly the configuration M4
+  // exists to prevent, so the honest reading is that repose is an M4
+  // measurement that M3 makes possible rather than an M3 result.
+  //
+  // What it *does* establish is that the mechanism is connected: friction
+  // reaches the pile and changes its shape. Peak height is the statistic
+  // rather than a fitted flank angle, because a fit over a puddle is noise
+  // while "how high can this material hold itself" is exactly what friction
+  // decides.
+  const seen = [];
+  for (const mu of [0.05, 0.4, 1.0]) {
+    const h = heap(mu, { n: 1600, hz: 480, seconds: 4 });
+    seen.push({ mu, ...h });
+    console.log(`    mu ${mu.toFixed(2)}: peak ${(h.peak * 1000).toFixed(2)} mm, ` +
+      `reach ${(h.maxR * 1000).toFixed(1)} mm, flank ${h.angle.toFixed(1)}° (indicative only)`);
+  }
+  check('  material piles up rather than spreading flat',
+    seen[seen.length - 1].peak > 6 * R,
+    `peak ${(seen[seen.length - 1].peak * 1000).toFixed(2)} mm at mu 1.0`);
+  check('  more friction holds it higher',
+    seen[seen.length - 1].peak > seen[0].peak * 1.25,
+    seen.map((s) => (s.peak * 1000).toFixed(2)).join(' -> ') + ' mm');
+  check('  and draws it in rather than letting it run',
+    seen[seen.length - 1].maxR < seen[0].maxR,
+    seen.map((s) => (s.maxR * 1000).toFixed(1)).join(' -> ') + ' mm');
+}
+
+if (wants('repose')) {
+console.log('\nthe heap is round, not hexagonal');
+  // ⚠ The risk M2 deferred to this milestone. The heightfield is a hex
+  // lattice, and choosing hex over a square grid was meant to keep the lattice
+  // out of the pile's shape. M2 proved the *relaxation* rule isotropic to
+  // 0.008%, but grains resting on lattice-aligned triangle facets is a
+  // separate mechanism that could not be tested until contacts existed.
+  //
+  // Weaker than it will be at M4, and worth saying so: a low spreading heap
+  // presses less directionally into the facets than a tall one will, so this
+  // rules out a gross six-fold signature rather than proving isotropy at the
+  // 0.008% the relaxation arm reached.
+  const h = heap(0.6, { n: 2000, hz: 480, seconds: 4 });
+  console.log(`    worst of twelve bearings deviates ${(h.bearingSpread * 100).toFixed(1)}% ` +
+    `from the mean reach (peak ${(h.peak * 1000).toFixed(2)} mm)`);
+  check('  the footprint has no gross six-fold signature', h.bearingSpread < 0.25,
+    `${(h.bearingSpread * 100).toFixed(1)}%`);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

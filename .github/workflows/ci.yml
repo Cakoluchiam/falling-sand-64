@@ -42,15 +42,22 @@ jobs:
         # which it only does unprompted from 22.7. test/run.mjs refuses to
         # start below that rather than failing incomprehensibly.
         node: ['22', '24']
-        # Longest first. 18 jobs against a 20-job account ceiling means nothing
-        # queues today, so this order changes nothing -- but the ceiling is per
-        # *account*, so another repo's workflow can put this run into
-        # contention without anything here changing. Under contention the
-        # makespan is minimised by starting the long jobs first, and matrix
-        # order is what decides dispatch order. It costs nothing to be right
-        # about it in advance.
-        suite: [clumps-spread, clumps-rate, clumps-stream,
-                hexfield, contact, hash, modules, smoke, sizes, pour]
+        # ⚠ Longest first, and this now matters. 13 suites x 2 versions is 26
+        # jobs against a 20-job *account* ceiling, so six of them queue behind
+        # the rest rather than all starting at once. Under contention the
+        # makespan is minimised by dispatching the long jobs first, and matrix
+        # order is what decides dispatch order -- put a two-second suite at the
+        # front and a two-minute one waits behind it for a slot. The ceiling is
+        # per account rather than per repo, so a workflow in another repository
+        # tightens this without anything here changing.
+        #
+        # Ordered by measured local runtime, longest first:
+        #   clumps-spread 101s   clumps-rate 87s   contact-pairs 47s
+        #   clumps-stream 47s    contact-repose 45s   hexfield 14s
+        #   contact-sleep 10s    everything else under a second
+        suite: [clumps-spread, clumps-rate, contact-pairs, clumps-stream,
+                contact-repose, hexfield, contact-sleep,
+                pour, modules, sizes, smoke, hash, contact-surface]
     name: ${{ matrix.suite }} (node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v4

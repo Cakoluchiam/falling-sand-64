@@ -274,6 +274,14 @@ The burial measure needs a **neighbour list per candidate grain** (index and rad
 
 *Verify:* no grain ever appears inside the pile or below the surface, tested at the extreme of the drop-height and flow-rate sliders where `speed * dt_flight` is largest. A pile forms with a recognisable repose angle.
 
+**⚠ The repose angle is not an M3 measurement, and M3 is where that became clear.** Friction demonstrably reaches the pile — swept at step 7, frictionless sand spreads to a 224 mm puddle 0.7 mm tall while μ = 1.0 draws the same material into 17 mm and stands it 3 mm high — so the mechanism is connected and the sliders do what they claim. But the *angle* cannot be trusted yet, for a reason that is structural rather than a matter of tuning.
+
+An M3 pile is made entirely of grains, and grains arriving at a realistic pour speed tunnel straight through it: the broad phase works on predicted positions, so a relative closing speed above roughly a grain diameter per substep is invisible, which is 0.24 m/s at 240 Hz against arrivals at 0.75 m/s. Measured, the heap stays a 2 mm puddle at 240 Hz and only begins to build at 960.
+
+**Absorption is the fix, more than the substep rate is.** In the finished design the body of the pile is heightfield — continuous, and impossible to tunnel through — carrying a two-grain active layer on top. The all-grain tower M3 necessarily builds is precisely the configuration M4 exists to prevent. So repose is an M4 measurement that M3 makes *possible*, and Experiment 0's comparison of emergent against dialed repose should be read as an M4-or-later item whatever the milestone headings say.
+
+**The anisotropy risk M2 deferred to here is provisionally clear**: twelve bearings around a poured heap deviate 4.8% from the mean reach, with no six-fold signature. Weaker than it will be once piles are tall — a low spreading heap presses less directionally into lattice-aligned facets than a steep one — so this rules out a gross hexagonal footprint rather than matching the 0.008% the relaxation arm reached. Re-run it at M4.
+
 ### M4 — Exchange
 
 `src/exchange.js`, implementing the decisions above. Note two of them are now build work rather than free: `grainTop`/`grainBottom` need their own pass, and relaxation's transport rule under per-cell φ needs deciding and measuring.
@@ -359,7 +367,9 @@ The reason it delivers nothing is a chain that runs back to the substep rate. `g
 
 **The conclusion is that absorption, not sleeping, is the mechanism that makes this affordable, and the two are ordered the wrong way round above.** Absorption removes grains from the simulation outright rather than hoping they hold still, and it is worth a measured 10× (20k live of a 200k cap). It also *enables* sleeping rather than competing with it: once the active layer is two grains deep instead of fifty, the solver converges in that layer, the jitter falls, and the stillness test starts to mean something. **M3 will not reach 60 fps at the full grain cap, and it is not supposed to** — the hybrid exists precisely because pure DEM does not scale, and this is that argument arriving with numbers attached.
 
-Mitigations in order, revised: **absorption (M4) first**; then the substep rate, decided against `g·dt² ≪ r` once the population is bounded; then sleeping, which should start paying once the first two land; then one solver iteration for resting-adjacent contacts. Worker offload over `SharedArrayBuffer` is the escape hatch, which is why the arrays are SAB-backed from M1. WebGPU compute is a stack change and out of scope.
+Mitigations in order, revised: **absorption (M4) first**; then the substep rate, decided against `g·dt² ≪ r` once the population is bounded; then sleeping, which should start paying once the first two land; then one solver iteration for resting-adjacent contacts. Worker offload over `SharedArrayBuffer` is the escape hatch, which is why the arrays are SAB-backed from M1.
+
+**⚠ Worker offload has a second justification that has nothing to do with throughput, and it is the one a user notices first.** The camera is in the simulation's loop: pointer handlers mutate its state immediately, but `camera.update` runs inside `render`, which runs after `simulate` in the same `requestAnimationFrame` callback. So a 97 ms frame gives roughly 10 fps of visual feedback while dragging, even though rendering costs 1.7 ms and the GPU is idle throughout. **Reordering does not help**: one contact substep is ~35 ms, so the smallest indivisible piece of simulation work already exceeds a frame, and there is nowhere to interleave a repaint. `frameBudgetMs` is doing its job — one substep run against twelve demanded — it simply cannot subdivide further. Moving physics off the main thread would make panning smooth *even if it changed total throughput not at all*, which is a different and more immediate benefit than the frame rate. The cheap interim mitigation, if it becomes annoying before M4: skip the simulation entirely while a pointer is down, trading a paused pile for a responsive camera during the drag. WebGPU compute is a stack change and out of scope.
 
 ## Out of scope for v1
 
