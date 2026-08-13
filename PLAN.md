@@ -1,6 +1,6 @@
 # 3D Falling Sand Simulator — v1 Implementation Plan
 
-> ## Plan version 7 — 2026-08-07
+> ## Plan version 8 — 2026-08-11
 >
 > **This tracked file is canonical.** Edit it here. Plan files under `~/.claude/plans/` are created *per planning session*, not per project — entering plan mode a second time mints a new empty file rather than reloading the last one, which is why edits made after an approval never reach the Plan tab. A planning session may copy this file into whatever file it owns, for display only; that copy is downstream.
 >
@@ -24,15 +24,18 @@
 > 15. *(version 7)* **M2's description of `HexField.relax` was wrong about its own code.** It moves height and lets volume follow, not the reverse. Harmless while φ is global and cancels; it is the whole difficulty once φ is per-cell.
 > 16. *(version 7)* **The heightfield cell spans about 2.4 grains, which bears on M4 more than on M2.** Measured during M3: the active layer holds ~9.5 grains per cell, so a per-cell packing fraction is estimated from about nine samples. Recorded against the decoupling decision, where it is a second and independent argument for the pre-approved retreat. Also the reason the solver population only falls to ~10% of the cap under absorption rather than to something much smaller — see "Performance exposure".
 >
-> **⛔ M1 and M2 complete. M3 and later remain documented for continuity, not approved.**
+> 17. *(version 8)* **M3 is built.** Friction is a positional cone rather than a velocity damping — the spec's wording would have made repose a property of the timestep. The broad phase is hierarchical rather than one grid plus a large-body list. Sleeping is correct and, measured, worth nothing until absorption exists. See "What M4 inherits".
+> 18. *(version 8)* **Repose angle, and Experiment 0 with it, move to M4.** An all-grain pile cannot be poured onto without arrivals tunnelling through it; the fix is absorption making the pile's body continuous, not a solver change.
+>
+> **⛔ M1, M2 and M3 complete. M4 and later remain documented for continuity, not approved.**
 
 ## Where things stand
 
-**Done:** M1 and M2. This plan, the six test suites, and `CLAUDE.md` are tracked in the repo rather than living in session-scoped temp directories.
+**Done:** M1, M2 and M3. This plan, the test suites, and `CLAUDE.md` are tracked in the repo rather than living in session-scoped temp directories.
 
-**Repo.** `Cakoluchiam/falling-sand-64`, `master` at `e13d8c5`. M1 landed as PR #2, M2 as PR #3, CI as PRs #4 and #5. Work happens on a branch and merges by PR; nothing has been pushed to `master` directly since the initial commit.
+**Repo.** `Cakoluchiam/falling-sand-64`. M1 landed as PR #2, M2 as PR #3, CI as PRs #4 and #5, M3 as PR #6. Work happens on a branch and merges by PR; nothing has been pushed to `master` directly since the initial commit.
 
-**CI.** `.github/workflows/ci.yml` runs all six suites on Node 22 and 24 on every push to `master` and every pull request — twelve jobs in a matrix rather than one, because `clumps` takes ~6 minutes on the runner while the other five finish inside 25 seconds, so fanning out puts the wall clock at the slowest suite instead of their sum and names the failing suite without opening a log. A thirteenth job, `all-tests`, aggregates the matrix into a single check.
+**CI.** `.github/workflows/ci.yml` runs every suite on Node 22 and 24 on every push to `master` and every pull request. `clumps` and `contact` are each split into named parts, so the matrix is 13 suites × 2 versions = **26 jobs against a 20-job account ceiling** — they queue, and the matrix is ordered longest-first from measured runtimes because that is what minimises the makespan under contention. A further job, `all-tests`, aggregates the matrix into a single check.
 
 **Branch protection is deliberately off**, and the gate is future-proofing rather than plumbing for something already switched on — there is no ruleset on the repo and `master` is unprotected. The point of building the gate now is that enabling protection later is then a one-line choice instead of a restructuring: require `all-tests` and nothing else. Requiring the twelve matrix jobs directly would mean re-editing the ruleset on every matrix change, and a required check that stops reporting blocks all merges until someone does. The gate carries `if: always()` for a related reason — without it the job is *skipped* when the matrix fails, and GitHub counts a skipped required check as a pass, so a gate that looked protective would be worse than none the day it was switched on.
 
@@ -40,7 +43,31 @@
 
 Measured: sampling continuous in height and normal across every cell and triangle boundary; the rendered mesh proven identical to the collision mesh, triangle by triangle, by centroid lookup; volume exact through deposit, debit and relaxation; 73k terrain triangles cost nothing next to 200k grain impostors (1.9 ms for both); the apex of a seeded cone renders to the same pixel the CPU projects it to, which is the end-to-end proof that the `SharedArrayBuffer`-backed height array uploads correctly as `R32F`.
 
-**Next: M3**, the contact solver — the section below is the spec, and it is the milestone the whole project's question turns on, since `friction` and `restitution` become the primary inputs the moment grains rather than a slump rule decide the pile's shape. Neither parameter exists in `src/params.js` yet; adding them is M3's first task, not a cleanup. What is already in place for it: the aggregate list in `particles.js` (built during M2 for clump absorption, and exactly the large-body list M3's broad phase wants), the `grainTop`/`grainBottom` arrays in `hexfield.js`, the `phase` enum, and the substep accumulator in `main.js` — which already degrades to slow motion under overload rather than freezing, verified before anything expensive went inside it.
+**M3 as built.** `src/contact.js` and `src/hash.js`, wired into `main.js`'s substep. Positional friction cone rather than the velocity damping the spec called for; hierarchical broad phase rather than one grid plus a large-body list; sleeping with a two-condition wake.
+
+Measured, and these are the numbers to keep: the friction transition sits at `atan(μ)` to three decimals across the slider (11.310°, 26.565°, 41.987°, 50.195°); sliding acceleration matches `g(sin θ − μ cos θ)` to four figures; and it is **flat across a sixteenfold change in timestep** — 2.5483 m/s² at 60, 120, 240 and 480 Hz. That last one is the property the spec's damping could not have had, and it is why repose can be an emergent output at all rather than a property of `dt`. Pairs separate exactly, weighted by inverse mass (512× displacement at an 8× radius ratio), conserving the pair centre of mass. Friction reaches the pile: frictionless sand spreads to a 224 mm puddle 0.7 mm tall, μ = 1.0 draws it into 17 mm and stands it 3 mm.
+
+---
+
+## What M4 inherits, and what it must not re-derive
+
+**Start by reading this file end to end and `gh pr view 6`.** The conventions file says so for a reason; this section is not a substitute for it.
+
+**One measurement explains most of M3's behaviour: `g·dt²` is 170 µm at 240 Hz against a 500 µm grain radius — a third of a grain per substep.** Four separate symptoms are that one number: deep stacks compress, grain-grain contacts tunnel above 0.24 m/s relative closing speed, sleeping retires 2% of a pile instead of most of it, and a poured heap stays a puddle. Do not treat them as four problems.
+
+**Absorption is the perf mechanism, and sleeping is not.** Measured: sleeping is worth 97.4 ms per frame against 97.4 ms without it. The plan's mitigation ordering was wrong and has been corrected under "Performance exposure". Absorption is worth a measured 10× and *enables* sleeping rather than competing with it, because a two-grain active layer converges where a fifty-grain tower does not.
+
+**Repose is M4's measurement, not M3's**, for a structural reason rather than a scheduling one — see the note under M3's verification. Experiment 0 moves with it.
+
+**Five things in M4's own spec were corrected during M3 and are marked ⚠ below.** In rough order of how much time they will cost if missed:
+
+1. **`grainTop`/`grainBottom` have no producer and are not free.** They were costed against the flat grid this plan originally specified; M3 built a hierarchical one whose cells are 3D and unrelated to heightfield columns. They need a pass of their own — every live grain through `sampleTriangle`, once per frame. They are **extrema**, so all three cells take the same value; the barycentric weights sitting right there are a trap.
+2. **The engulfment invariant deadlocks as written.** Elevation is flush to `min(py − radius)`, so `height == grainBottom` by construction and every upward move crosses it. Needs the absorbed batch excluded and a tolerance.
+3. **Per-cell φ breaks relaxation's volume conservation**, and neither obvious transport rule survives. Decide which invariant the arm owes, with a measurement.
+4. **φ_local is estimated from about nine grains** at the current cell size, and divides by a height that is zero wherever the pile has not reached. Both recorded against the decoupling decision, which strengthens the pre-approved retreat to volume-derived height.
+5. **The burial prefilter must be monotone** — resting, quiescent, contact count — not the column-depth test the topology measure replaced.
+
+**Two smaller inheritances.** `ContactSolver.wakeAll` is deliberately blunt: any relaxation movement wakes the entire pile, which is affordable only because the arm is off by default. M4 moves the surface constantly and needs the narrow version — wake the grains over cells that actually moved, which is a query the same `grainTop` pass can answer. And the substep-rate decision is explicitly deferred to M4: settle `g·dt² ≪ r` against the frame budget *after* absorption bounds the population, not before.
 
 **Outstanding from M1**, neither blocking: the visual checks (grains round at any zoom, stream continuous by eye, sustained 60 fps) need the Browser pane displayed, because `requestAnimationFrame` does not fire while it is hidden — everything verified so far came from driving the loop manually. The dev server is started with `node tools/serve.js` and does not persist across sessions.
 
