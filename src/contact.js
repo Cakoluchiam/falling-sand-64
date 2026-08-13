@@ -33,7 +33,7 @@
 // g·dt²(sin θ − μ cos θ), which is an acceleration of g(sin θ − μ cos θ).
 // Both are what the textbook says, and neither mentions the timestep.
 
-import { PHASE_AWAKE } from './particles.js';
+import { PHASE_AWAKE, PHASE_BALLISTIC, PHASE_RESTING } from './particles.js';
 import { GrainHash } from './hash.js';
 
 // Below this multiple of the per-substep gravity impulse, an impact is not an
@@ -72,9 +72,15 @@ export class ContactSolver {
     // has had exactly that removed by the projection.
     this.vprev = new Float64Array(capacity * 3);
     this.hash = new GrainHash(capacity);
+    // Whether this grain is resting on anything at all. A grain at the top of
+    // a bounce is momentarily motionless and must not be allowed to fall
+    // asleep in mid-air on the strength of that.
+    this.supported = new Uint8Array(capacity);
     this._surf = new Float64Array(4);
     this.contacts = 0;
     this.pairs = 0;
+    this.asleep = 0;
+    this.wokenLast = 0;
     // Hoisted so the rebuild does not allocate a closure every substep.
     this._accept = null;
   }
@@ -97,12 +103,28 @@ export class ContactSolver {
    * this pass, so any drift in the centre of mass would be the solver quietly
    * pushing the pile somewhere, and the test suite checks it directly.
    */
-  _solvePairs(P, mu) {
-    const { px, py, pz, vol, radius } = P;
-    const xprev = this.xprev;
+  _solvePairs(P, mu, wakeDepth, stirSpeed) {
+    const { px, py, pz, vx, vy, vz, vol, radius, phase } = P;
+    const xprev = this.xprev, vprev = this.vprev, supported = this.supported;
     const hash = this.hash;
     const sorted = hash.sorted;
     let overlaps = 0;
+
+    // A sleeper is woken by being intruded on, and from that moment it is an
+    // ordinary grain again. It must not *move* during the substep that wakes
+    // it, though: the predict pass has already run and skipped it, so it has
+    // no start-of-substep position on record. Giving it one here means the
+    // velocity pass sees no displacement and leaves it at rest, and it joins
+    // the solve properly from the next substep.
+    const wake = (j) => {
+      phase[j] = PHASE_AWAKE;
+      P.restTimer[j] = 0;
+      const b = j * 3;
+      xprev[b] = px[j]; xprev[b + 1] = py[j]; xprev[b + 2] = pz[j];
+      vprev[b] = vx[j]; vprev[b + 1] = vy[j]; vprev[b + 2] = vz[j];
+      vx[j] = 0; vy[j] = 0; vz[j] = 0;
+      this.wokenLast++;
+    };
 
     // Iterating the sorted order rather than `live` walks the pairs in the
     // order the counting sort laid them out, so neighbours tend to be adjacent
@@ -110,12 +132,20 @@ export class ContactSolver {
     // sees them, which converges faster per iteration than accumulating.
     for (let s = 0; s < hash.count; s++) {
       const i = sorted[s];
+      // Not skipped when `i` is asleep. The hash hands each pair to exactly
+      // one of its members, and which one depends on their levels -- skip the
+      // sleepers as drivers and every pair whose sleeping member happens to be
+      // the finer one vanishes, so an awake grain would sink into it.
+      const iAsleep = phase[i] === PHASE_RESTING;
       hash.forEachNeighbour(P, i, (j) => {
+        const jAsleep = phase[j] === PHASE_RESTING;
+        if (iAsleep && jAsleep) return;              // neither can move
         const dx = px[i] - px[j], dy = py[i] - py[j], dz = pz[i] - pz[j];
         const sum = radius[i] + radius[j];
         const d2 = dx * dx + dy * dy + dz * dz;
         if (d2 >= sum * sum) return;
         overlaps++;
+        supported[i] = 1; supported[j] = 1;
         // Coincident centres have no separating direction. Two grains emitted
         // at the same instant from the same point really can land here, so
         // pick an arbitrary axis rather than dividing by zero.
@@ -125,9 +155,51 @@ export class ContactSolver {
         else { nx = 0; ny = 1; nz = 0; }
         const depth = sum - dist;
 
-        const total = vol[i] + vol[j];
-        const si = total > 0 ? vol[j] / total : 0.5;
-        const sj = 1 - si;
+        // ⚠ A sleeper is infinite mass for this substep: the awake partner
+        // takes the whole correction. Splitting it by volume instead would let
+        // an arriving grain shove the pile it lands on downward, and the pile
+        // would sag under every impact rather than carrying it.
+        //
+        // Waking is gated on a real intrusion rather than any touch, or the
+        // resting jitter of a settled contact would wake its own neighbours
+        // and nothing would ever stay asleep.
+        // ⚠ A sleeper wakes for either of two reasons, and the second is what
+        // stops sleeping from changing the answer. Being *intruded on* is the
+        // obvious one. Being in contact with something that is still **moving**
+        // is the one that matters: a flank creeps downhill slowly enough that
+        // its grains meet any stillness test, and freezing them mid-collapse
+        // holds the pile at whatever angle it had reached. Measured, a rule
+        // without this left the heap 39% taller and 66% higher in the mean --
+        // which reads as a steeper repose angle, and repose is the number this
+        // project exists to measure. Waking on a moving neighbour lets the
+        // disturbance propagate one contact per substep, so a settling flank
+        // stays awake while the buried interior underneath it does not.
+        //
+        // `stirSpeed` is deliberately well above `sleepSpeed` rather than equal
+        // to it. Set equal, the rule is far too contagious: a settled pile
+        // still jitters, so one twitchy grain wakes its whole neighbourhood,
+        // those grains never accumulate the quiet substeps sleep requires, and
+        // their own jitter wakes the next ring outward. Measured on an
+        // undisturbed pile, the median awake grain moves at 0.0006 m/s -- three
+        // times *under* the sleep threshold -- and yet only 6% of the pile
+        // managed to sleep. The gap between "not settled" and "actually
+        // avalanching" is what this threshold has to sit in.
+        const moving = (k) => {
+          const s2 = vx[k] * vx[k] + vy[k] * vy[k] + vz[k] * vz[k];
+          return s2 > stirSpeed * stirSpeed;
+        };
+        let si, sj;
+        if (jAsleep) {
+          si = 1; sj = 0;
+          if (depth > wakeDepth || moving(i)) wake(j);
+        } else if (iAsleep) {
+          si = 0; sj = 1;
+          if (depth > wakeDepth || moving(j)) wake(i);
+        } else {
+          const total = vol[i] + vol[j];
+          si = total > 0 ? vol[j] / total : 0.5;
+          sj = 1 - si;
+        }
         px[i] += nx * depth * si; py[i] += ny * depth * si; pz[i] += nz * depth * si;
         px[j] -= nx * depth * sj; py[j] -= ny * depth * sj; pz[j] -= nz * depth * sj;
 
@@ -158,14 +230,17 @@ export class ContactSolver {
    * closing speed has to come from `vprev`.
    */
   _resolvePairVelocities(P, e, bounceFloor) {
-    const { px, py, pz, vx, vy, vz, vol, radius } = P;
+    const { px, py, pz, vx, vy, vz, vol, radius, phase } = P;
     const vprev = this.vprev;
     const hash = this.hash;
     const sorted = hash.sorted;
 
     for (let s = 0; s < hash.count; s++) {
       const i = sorted[s];
+      const iAsleep = phase[i] === PHASE_RESTING;
       hash.forEachNeighbour(P, i, (j) => {
+        const jAsleep = phase[j] === PHASE_RESTING;
+        if (iAsleep && jAsleep) return;
         const dx = px[i] - px[j], dy = py[i] - py[j], dz = pz[i] - pz[j];
         const sum = radius[i] + radius[j];
         const d2 = dx * dx + dy * dy + dz * dz;
@@ -175,10 +250,13 @@ export class ContactSolver {
         const dist = Math.sqrt(d2);
         const nx = dx / dist, ny = dy / dist, nz = dz / dist;
 
+        // A sleeper contributes no velocity, and its stored `vprev` is stale --
+        // whatever it happened to be carrying when it fell asleep, which may
+        // have been substeps ago.
         const bi = i * 3, bj = j * 3;
-        const approach = (vprev[bi] - vprev[bj]) * nx +
-                         (vprev[bi + 1] - vprev[bj + 1]) * ny +
-                         (vprev[bi + 2] - vprev[bj + 2]) * nz;
+        const pix = iAsleep ? 0 : vprev[bi], piy = iAsleep ? 0 : vprev[bi + 1], piz = iAsleep ? 0 : vprev[bi + 2];
+        const pjx = jAsleep ? 0 : vprev[bj], pjy = jAsleep ? 0 : vprev[bj + 1], pjz = jAsleep ? 0 : vprev[bj + 2];
+        const approach = (pix - pjx) * nx + (piy - pjy) * ny + (piz - pjz) * nz;
         // A pair that was not closing hard still has to be damped, not
         // skipped: the projection has just converted their overlap into
         // separating velocity, and leaving it in is how a pile breathes itself
@@ -187,9 +265,14 @@ export class ContactSolver {
         const target = approach < -bounceFloor ? -e * approach : 0;
         const add = target - vn;
         if (add === 0) return;
-        const total = vol[i] + vol[j];
-        const si = total > 0 ? vol[j] / total : 0.5;
-        const sj = 1 - si;
+        let si, sj;
+        if (jAsleep) { si = 1; sj = 0; }
+        else if (iAsleep) { si = 0; sj = 1; }
+        else {
+          const total = vol[i] + vol[j];
+          si = total > 0 ? vol[j] / total : 0.5;
+          sj = 1 - si;
+        }
         vx[i] += nx * add * si; vy[i] += ny * add * si; vz[i] += nz * add * si;
         vx[j] -= nx * add * sj; vy[j] -= ny * add * sj; vz[j] -= nz * add * sj;
       });
@@ -207,7 +290,8 @@ export class ContactSolver {
     const e = Math.min(Math.max(o.restitution, 0), 1);
     const iterations = o.iterations ?? 2;
     const xprev = this.xprev, vprev = this.vprev;
-    const approachVn = this.approachVn, touching = this.touching;
+    const approachVn = this.approachVn, touching = this.touching, supported = this.supported;
+    this.wokenLast = 0;
     const surf = this._surf;
     const n = P.count;
     const bounceFloor = BOUNCE_FLOOR * g * dt;
@@ -228,7 +312,13 @@ export class ContactSolver {
 
     // --- Broad phase over the predicted positions, so the pairs solved below
     // are the ones that will actually be overlapping.
-    if (!this._accept) this._accept = (i) => phase[i] === PHASE_AWAKE;
+    //
+    // Sleeping grains are in here too. They are skipped by the integration and
+    // never move, but they are what the awake ones are resting *on* -- drop
+    // them from the broad phase and the surface layer falls through the pile.
+    // This is also why sleeping bounds the solver's cost but not the hash's:
+    // the rebuild stays proportional to the whole settled population.
+    if (!this._accept) this._accept = (i) => phase[i] !== PHASE_BALLISTIC;
     this.hash.rebuild(P, o.baseCell, this._accept);
 
     // --- Record the approach speed *before* any projection. Restitution
@@ -250,10 +340,12 @@ export class ContactSolver {
       const depth = radius[i] - (nx * px[i] + ny * py[i] + nz * pz[i] - plane[p]);
       if (depth > 0) {
         touching[i] = 1;
+        supported[i] = 1;
         approachVn[i] = vx[i] * surf[1] + vy[i] * surf[2] + vz[i] * surf[3];
         contacts++;
       } else {
         touching[i] = 0;
+        supported[i] = 0;
         approachVn[i] = 0;
       }
     }
@@ -271,7 +363,7 @@ export class ContactSolver {
     // to be, for M4: absorption's engulfment invariant assumes no live grain is
     // ever below the surface, and that assumption is established here.
     for (let it = 0; it < iterations; it++) {
-      const found = this._solvePairs(P, mu);
+      const found = this._solvePairs(P, mu, o.wakeDepth, o.stirSpeed);
       // The first iteration's count is the real overlap population; later
       // iterations find only what the earlier ones left, so reporting the last
       // would always read near zero and look like nothing was in contact.
@@ -365,5 +457,58 @@ export class ContactSolver {
     // contacts as the *only* ones that sprang apart, which is precisely
     // backwards from what the setting means.
     this._resolvePairVelocities(P, e, bounceFloor);
+
+    // --- Retire whatever has stopped moving.
+    //
+    // Two conditions, and the second is the one that is easy to leave out: a
+    // grain must be slow *and* resting on something. At the apex of a bounce a
+    // grain is momentarily motionless in mid-air, and a speed test alone would
+    // put it to sleep there, leaving it hanging.
+    //
+    // The timer is what makes it hysteretic rather than a threshold that
+    // chatters. `restTimer` already existed on the store for exactly this.
+    let asleep = 0;
+    for (let k = 0; k < n; k++) {
+      const i = live[k];
+      if (phase[i] === PHASE_RESTING) { asleep++; continue; }
+      if (phase[i] !== PHASE_AWAKE) continue;
+      const speed2 = vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i];
+      if (supported[i] && speed2 < o.sleepSpeed * o.sleepSpeed) {
+        if (++P.restTimer[i] >= o.sleepSubsteps) {
+          phase[i] = PHASE_RESTING;
+          vx[i] = 0; vy[i] = 0; vz[i] = 0;
+          asleep++;
+        }
+      } else {
+        P.restTimer[i] = 0;
+      }
+    }
+    this.asleep = asleep;
+  }
+
+  /**
+   * Wake everything. The heightfield moving under a sleeping grain is the one
+   * disturbance the pair pass cannot see, since the grain has no contact to be
+   * intruded upon -- the ground simply leaves, or arrives.
+   *
+   * Deliberately blunt: it wakes the whole population rather than the grains
+   * over the cells that actually moved. Finding those needs a query the hash
+   * does not answer, since its cells are three-dimensional and unrelated to
+   * heightfield columns. The relaxation arm is off by default and is a
+   * comparison arm rather than the physics, so paying for it there is
+   * acceptable; M4 moves the surface constantly and will need the narrower
+   * version, which is why `grainTop`/`grainBottom` get a pass of their own.
+   */
+  wakeAll(P) {
+    const { phase, live } = P;
+    let woken = 0;
+    for (let k = 0; k < P.count; k++) {
+      const i = live[k];
+      if (phase[i] !== PHASE_RESTING) continue;
+      phase[i] = PHASE_AWAKE;
+      P.restTimer[i] = 0;
+      woken++;
+    }
+    return woken;
   }
 }

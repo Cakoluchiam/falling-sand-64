@@ -106,18 +106,29 @@ class App {
       friction: values.friction,
       restitution: values.restitution,
       iterations: CONFIG.contactIterations,
+      sleepSpeed: CONFIG.sleepSpeed,
+      sleepSubsteps: CONFIG.sleepSubsteps,
+      stirSpeed: CONFIG.sleepSpeed * CONFIG.stirFactor,
+      // Scaled to the substep, because the overlap a settled contact carries
+      // is g*dt^2 and the wake threshold has to sit above it.
+      wakeDepth: CONFIG.wakeDepthFactor * values.gravity * h * h,
       // Level 0 of the broad-phase hierarchy. The median grain is the right
       // scale: finer wastes levels on empty cells, coarser piles ordinary
       // grains into one bucket and the 27-cell neighbourhood stops being cheap.
       baseCell: values.medianDiameter,
     });
     if (!values.relaxation) return;
-    this.field.relax(
+    // The surface moving is the one disturbance a sleeping grain cannot feel
+    // through its contacts, so anything the slump rule actually moved wakes
+    // the pile. Relaxation is off by default, which is why this can afford to
+    // be blunt; M4 will move the surface every frame and will need better.
+    const moved = this.field.relax(
       h,
       Math.tan(values.reposeAngle * DEG),
       Math.tan(derived.staticAngle() * DEG),
       relaxRateFromHalfLife(values.slumpHalfLife),
     );
+    if (moved > 0) this.contacts.wakeAll(this.particles);
   }
 
   // Nothing left to watch: everything has landed and no more sand can come out,

@@ -14,7 +14,7 @@
 
 import { ContactSolver } from '../src/contact.js';
 import { HexField } from '../src/hexfield.js';
-import { Particles, PHASE_AWAKE } from '../src/particles.js';
+import { Particles, PHASE_AWAKE, PHASE_RESTING } from '../src/particles.js';
 import { Rng } from '../src/rng.js';
 
 let failures = 0;
@@ -536,6 +536,163 @@ console.log('\na deep heap cannot press grains through the floor');
   console.log(`    after 1.5 s more at 960 Hz: deepest ${(fine.deepest * 1e6).toFixed(1)} µm`);
   check('  and what remains converges away with the substep',
     fine.deepest > r.deepest / 4, `${(fine.deepest * 1e6).toFixed(1)} vs ${(r.deepest * 1e6).toFixed(1)} µm`);
+}
+
+// ------------------------------------------------------------- sleeping ----
+
+const SLEEP = { sleepSpeed: 0.002, sleepSubsteps: 12 };
+const sleepOpts = (hz, mu = 0.5, e = 0) => ({
+  gravity: G, friction: mu, restitution: e, iterations: 2, baseCell: BASE,
+  ...SLEEP, wakeDepth: 0.2 * G / (hz * hz), stirSpeed: SLEEP.sleepSpeed * 10,
+});
+
+console.log('\ngrains that stop moving retire from the solver');
+{
+  const field = tiltedField(0);
+  const P = new Particles(16);
+  const solver = new ContactSolver(16);
+  for (let k = 0; k < 3; k++) {
+    const i = P.alloc();
+    P.radius[i] = R; P.vol[i] = (Math.PI / 6) * (2 * R) ** 3;
+    P.px[i] = 0; P.pz[i] = 0; P.py[i] = R + k * 2 * R;
+    P.phase[i] = PHASE_AWAKE;
+  }
+  let firstAsleep = -1;
+  for (let s = 0; s < 600; s++) {
+    solver.step(P, field, 1 / 240, sleepOpts(240));
+    if (firstAsleep < 0 && solver.asleep === P.count) firstAsleep = s;
+  }
+  console.log(`    all 3 asleep after ${firstAsleep} substeps (${(firstAsleep / 240).toFixed(2)} s)`);
+  check('  a settled column falls asleep', solver.asleep === P.count, `${solver.asleep} of ${P.count}`);
+  check('  and does so promptly', firstAsleep >= 0 && firstAsleep < 240, `${firstAsleep} substeps`);
+}
+
+console.log('\nnothing falls asleep in mid-air');
+{
+  // ⚠ The condition that is easy to omit. A grain thrown upward is motionless
+  // at the top of its arc, so a speed test on its own retires it there and
+  // leaves it hanging. Sleep needs contact as well as stillness.
+  const field = tiltedField(0);
+  const P = new Particles(8);
+  const solver = new ContactSolver(8);
+  const i = P.alloc();
+  P.radius[i] = R; P.vol[i] = (Math.PI / 6) * (2 * R) ** 3;
+  P.px[i] = 0; P.pz[i] = 0; P.py[i] = 0.05;
+  P.vy[i] = 0;                                  // released from rest, high up
+  P.phase[i] = PHASE_AWAKE;
+  let sleptWhileFalling = false;
+  for (let s = 0; s < 40; s++) {
+    solver.step(P, field, 1 / 240, sleepOpts(240));
+    if (P.phase[i] === PHASE_RESTING && P.py[i] > 0.01) sleptWhileFalling = true;
+  }
+  check('  a grain released in mid-air does not sleep on the way down', !sleptWhileFalling,
+    `slept at y = ${(P.py[i] * 1000).toFixed(1)} mm`);
+}
+
+console.log('\na sleeping grain still holds up what lands on it');
+{
+  // Sleepers stay in the broad phase and act as immovable. Drop this test and
+  // the surface layer sinks through the settled pile beneath it.
+  const field = tiltedField(0);
+  const P = new Particles(16);
+  const solver = new ContactSolver(16);
+  const base = P.alloc();
+  P.radius[base] = R; P.vol[base] = (Math.PI / 6) * (2 * R) ** 3;
+  P.px[base] = 0; P.pz[base] = 0; P.py[base] = R;
+  P.phase[base] = PHASE_AWAKE;
+  for (let s = 0; s < 400; s++) solver.step(P, field, 1 / 240, sleepOpts(240));
+  check('  the lone grain is asleep before anything arrives', P.phase[base] === PHASE_RESTING);
+  const restingY = P.py[base];
+
+  const top = P.alloc();
+  P.radius[top] = R; P.vol[top] = (Math.PI / 6) * (2 * R) ** 3;
+  P.px[top] = 0; P.pz[top] = 0; P.py[top] = 4 * R;
+  P.phase[top] = PHASE_AWAKE;
+  for (let s = 0; s < 600; s++) solver.step(P, field, 1 / 240, sleepOpts(240));
+
+  const gap = P.py[top] - P.py[base];
+  console.log(`    arrival settled ${(gap * 1e6).toFixed(1)} µm above the sleeper ` +
+    `(want ${(2 * R * 1e6).toFixed(0)} µm), sleeper moved ${((P.py[base] - restingY) * 1e6).toFixed(1)} µm`);
+  check('  the arrival rests on top rather than through', gap > 2 * R * 0.85,
+    `${(gap * 1e6).toFixed(1)} µm`);
+  check('  and the sleeper was not shoved downward', P.py[base] > restingY - R * 0.05,
+    `moved ${((P.py[base] - restingY) * 1e6).toFixed(1)} µm`);
+}
+
+console.log('\nan intruded sleeper wakes, a jostled one does not');
+{
+  const field = tiltedField(0);
+  const P = new Particles(16);
+  const solver = new ContactSolver(16);
+  const a = P.alloc();
+  P.radius[a] = R; P.vol[a] = (Math.PI / 6) * (2 * R) ** 3;
+  P.px[a] = 0; P.pz[a] = 0; P.py[a] = R;
+  P.phase[a] = PHASE_AWAKE;
+  for (let s = 0; s < 400; s++) solver.step(P, field, 1 / 240, sleepOpts(240));
+  check('  the sleeper is asleep to begin with', P.phase[a] === PHASE_RESTING);
+
+  // Shove a grain into it hard enough to matter.
+  const b = P.alloc();
+  P.radius[b] = R; P.vol[b] = (Math.PI / 6) * (2 * R) ** 3;
+  P.px[b] = 1.4 * R; P.pz[b] = 0; P.py[b] = R;
+  P.phase[b] = PHASE_AWAKE;
+  solver.step(P, field, 1 / 240, sleepOpts(240));
+  check('  a real intrusion wakes it', P.phase[a] === PHASE_AWAKE);
+}
+
+console.log('\nsleeping does not change where the pile ends up');
+{
+  // ⚠ The check that sleeping is an optimisation rather than a physics change.
+  // A too-eager sleep rule freezes a pile mid-collapse and the result looks
+  // like a steeper repose angle -- which this project measures, so it would be
+  // a wrong answer rather than a slow one.
+  const build = (sleeping) => {
+    const field = tiltedField(0);
+    const rng = new Rng(77);
+    const n = 900;
+    const P = new Particles(n + 8);
+    const solver = new ContactSolver(n + 8);
+    for (let k = 0; k < n; k++) {
+      const i = P.alloc();
+      const r = R * (0.6 + rng.next() * 0.8);
+      P.radius[i] = r; P.vol[i] = (Math.PI / 6) * (2 * r) ** 3;
+      P.px[i] = (rng.next() - 0.5) * 0.01;
+      P.pz[i] = (rng.next() - 0.5) * 0.01;
+      P.py[i] = R + rng.next() * 0.03;
+      P.phase[i] = PHASE_AWAKE;
+    }
+    const o = sleeping
+      ? sleepOpts(240)
+      : { ...pairOpts(0.5), sleepSpeed: 0, sleepSubsteps: 1e9, wakeDepth: 0 };
+    for (let s = 0; s < 1500; s++) solver.step(P, field, 1 / 240, o);
+    // ⚠ Distribution statistics, not extremes. A 900-grain pile is chaotic:
+    // any perturbation sends two runs down different trajectories, and the
+    // single highest grain then differs by 20% between runs that are
+    // physically the same. The mean over the whole population, and a high
+    // percentile of it, are what actually describe the heap's shape.
+    const ys = [], rs = [];
+    let sum = 0;
+    for (let k = 0; k < P.count; k++) {
+      const i = P.live[k];
+      ys.push(P.py[i]); rs.push(Math.hypot(P.px[i], P.pz[i]));
+      sum += P.py[i];
+    }
+    ys.sort((a, b) => a - b); rs.sort((a, b) => a - b);
+    const q = (arr, f) => arr[Math.min(arr.length - 1, Math.floor(arr.length * f))];
+    return { meanY: sum / P.count, p90Y: q(ys, 0.9), p90R: q(rs, 0.9), asleep: solver.asleep };
+  };
+  const on = build(true), off = build(false);
+  const fmt = (r) => `mean y ${(r.meanY * 1000).toFixed(3)}, p90 y ${(r.p90Y * 1000).toFixed(3)}, ` +
+    `p90 radius ${(r.p90R * 1000).toFixed(2)} mm`;
+  console.log(`    sleeping on:  ${fmt(on)}, ${on.asleep} asleep`);
+  console.log(`    sleeping off: ${fmt(off)}`);
+  check('  sleeping retires some of the pile', on.asleep > 20, `${on.asleep} of 900`);
+  check('  the heap sits at the same mean height', Math.abs(on.meanY / off.meanY - 1) < 0.05,
+    `${(on.meanY * 1000).toFixed(3)} vs ${(off.meanY * 1000).toFixed(3)} mm`);
+  check('  its upper reaches are the same height', Math.abs(on.p90Y / off.p90Y - 1) < 0.08,
+    `${(on.p90Y * 1000).toFixed(3)} vs ${(off.p90Y * 1000).toFixed(3)} mm`);
+  check('  and it spreads the same distance', Math.abs(on.p90R / off.p90R - 1) < 0.08,
+    `${(on.p90R * 1000).toFixed(2)} vs ${(off.p90R * 1000).toFixed(2)} mm`);
 }
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

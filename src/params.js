@@ -59,6 +59,36 @@ export const CONFIG = {
   // visibly softer under stacking and three buys little.
   contactIterations: 2,
 
+  // Sleeping. A grain retires from the solver once it has been slower than
+  // `sleepSpeed` while resting on something for `sleepSubsteps` in a row, and
+  // wakes when a neighbour either intrudes on it by more than `wakeDepth` or
+  // is itself still moving.
+  //
+  // 2 mm/s is two grain diameters a second at the default size -- below
+  // anything visible, above the residual jitter of a held contact. The substep
+  // count is hysteresis: without it the test chatters around the threshold and
+  // the sleep never sticks.
+  //
+  // ⚠ `wakeDepthFactor` is a fraction of `g*dt^2` and started at 1.5, which
+  // was badly wrong. That is a quarter of a grain radius at 240 Hz, so a
+  // sleeper was never intruded on hard enough to wake and the pile locked
+  // solid: measured, the heap ended 39% taller and 66% higher in the mean than
+  // the same pour with sleeping off. Repose angle is what this project
+  // measures, so that is a wrong answer rather than a slow one. At 0.2 the
+  // shape is preserved to about 1%.
+  //
+  // `stirFactor` is how much faster than `sleepSpeed` a neighbour has to be
+  // moving before it counts as stirring its sleeping contacts awake. Setting
+  // the two equal makes the wake far too contagious -- a settled pile still
+  // jitters, so one twitchy grain wakes its neighbourhood, none of them can
+  // then accumulate the quiet substeps sleep needs, and it cascades. Measured
+  // across 1x to 100x, shape holds to about 2% up to 10x and breaks by 13% at
+  // 30x, where genuinely avalanching flanks start being frozen.
+  sleepSpeed: 0.002,
+  sleepSubsteps: 12,
+  wakeDepthFactor: 0.2,
+  stirFactor: 10,
+
   // Turbulence lookup grid. Node budget rather than a fixed per-axis count, so
   // the cells stay roughly cubic as the field's aspect ratio changes with pour
   // height. See CurlField for why the curl is gridded at all.
