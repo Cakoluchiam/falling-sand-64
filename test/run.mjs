@@ -35,7 +35,20 @@ const SUITES = [
   ['sizes', 'sizes.mjs', 'grain size limits, uniform sand, truncated sampling'],
   ['pour', 'pour.mjs', 'pour angle aims, pour spread widens, launch geometry'],
   ['hexfield', 'hexfield.mjs', 'lattice geometry, sampling continuity, volume ledger, relaxation'],
-  ['clumps', 'clumps.mjs', 'clump population: rate, interleaving, self-correction'],
+  ['hash', 'hash.mjs', 'contact broad phase: hierarchy, counting sort, exactly-once pairs'],
+  // `contact` is split for the same reason as `clumps` below: it grew past a
+  // minute and would otherwise set the matrix wall clock on its own.
+  ['contact-surface', 'contact.mjs', 'a grain on the terrain: friction angle, sliding, bounce', 'surface'],
+  ['contact-pairs', 'contact.mjs', 'grain against grain: separation, weighting, stacks, piles', 'pairs'],
+  ['contact-sleep', 'contact.mjs', 'retiring settled grains, and waking them again', 'sleep'],
+  ['contact-repose', 'contact.mjs', 'friction holds the pile up, and the footprint is round', 'repose'],
+  // `clumps` is minutes where the rest are seconds, so it is split into three
+  // parts that CI runs as separate jobs. A fourth element is the argument
+  // handed to the script; everything else runs whole. The parts share one file
+  // and therefore one set of pinned parameters -- see the note in clumps.mjs.
+  ['clumps-stream', 'clumps.mjs', 'clumps interleave with the sand and never trap it', 'stream'],
+  ['clumps-rate', 'clumps.mjs', 'clump rate, volume fraction, and slider scaling', 'rate'],
+  ['clumps-spread', 'clumps.mjs', 'clump arrivals are consistent run to run, not Poisson', 'spread'],
 ];
 
 const filter = process.argv[2];
@@ -47,10 +60,11 @@ if (selected.length === 0) {
 }
 
 const results = [];
-for (const [name, file, blurb] of selected) {
+for (const [name, file, blurb, arg] of selected) {
   process.stdout.write(`\n${'='.repeat(70)}\n${name}  —  ${blurb}\n${'='.repeat(70)}\n`);
   const started = Date.now();
-  const run = spawnSync(process.execPath, [join(here, file)], { stdio: 'inherit' });
+  const argv = arg ? [join(here, file), arg] : [join(here, file)];
+  const run = spawnSync(process.execPath, argv, { stdio: 'inherit' });
   results.push({ name, ok: run.status === 0, seconds: (Date.now() - started) / 1000 });
 }
 

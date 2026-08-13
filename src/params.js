@@ -14,6 +14,10 @@
 // only instrument for the project's question, so it covers every parameter
 // rather than a curated subset.
 
+// The only import here, for the truncated-lognormal correction in
+// `meanGrainVolume`. `rng.js` imports nothing, so this cannot cycle.
+import { normalCdf } from './rng.js';
+
 const SQRT3_2 = Math.sqrt(3) / 2;
 
 // Quartz sand. Particle density is the density of the mineral itself; bulk
@@ -42,6 +46,48 @@ export const CONFIG = {
   // inaccurate one -- at 10x a single 1/60 step would move a grain 8 cm.
   maxBallisticStep: 1 / 120,
   maxBallisticIters: 32,
+
+  // How close to the surface, in grain diameters, a grain gets handed from
+  // free flight to the contact solver. A numerical safety margin rather than a
+  // physical knob, which is why it lives here and not on the panel: too small
+  // and a grain resolves its first contact already deep inside the surface,
+  // too large and grains join the solver long before they need to be there and
+  // pay for it every substep. The handoff also carries a speed term, so this
+  // only has to cover size.
+  handoffDepth: 2,
+  // Constraint iterations per substep. Two is the plan's figure; one is
+  // visibly softer under stacking and three buys little.
+  contactIterations: 2,
+
+  // Sleeping. A grain retires from the solver once it has been slower than
+  // `sleepSpeed` while resting on something for `sleepSubsteps` in a row, and
+  // wakes when a neighbour either intrudes on it by more than `wakeDepth` or
+  // is itself still moving.
+  //
+  // 2 mm/s is two grain diameters a second at the default size -- below
+  // anything visible, above the residual jitter of a held contact. The substep
+  // count is hysteresis: without it the test chatters around the threshold and
+  // the sleep never sticks.
+  //
+  // ⚠ `wakeDepthFactor` is a fraction of `g*dt^2` and started at 1.5, which
+  // was badly wrong. That is a quarter of a grain radius at 240 Hz, so a
+  // sleeper was never intruded on hard enough to wake and the pile locked
+  // solid: measured, the heap ended 39% taller and 66% higher in the mean than
+  // the same pour with sleeping off. Repose angle is what this project
+  // measures, so that is a wrong answer rather than a slow one. At 0.2 the
+  // shape is preserved to about 1%.
+  //
+  // `stirFactor` is how much faster than `sleepSpeed` a neighbour has to be
+  // moving before it counts as stirring its sleeping contacts awake. Setting
+  // the two equal makes the wake far too contagious -- a settled pile still
+  // jitters, so one twitchy grain wakes its neighbourhood, none of them can
+  // then accumulate the quiet substeps sleep needs, and it cascades. Measured
+  // across 1x to 100x, shape holds to about 2% up to 10x and breaks by 13% at
+  // 30x, where genuinely avalanching flanks start being frozen.
+  sleepSpeed: 0.002,
+  sleepSubsteps: 12,
+  wakeDepthFactor: 0.2,
+  stirFactor: 10,
 
   // Turbulence lookup grid. Node budget rather than a fixed per-axis count, so
   // the cells stay roughly cubic as the field's aspect ratio changes with pour
@@ -79,9 +125,14 @@ export const values = {
   autoRestartDelay: 2,
 
   // --- Source ---
-  // Solid volume per second. 1.509e-4 m^3/s = 400 g/s = a 4 kg bucket in 10 s.
-  flowRate: 400 / (SAND_PARTICLE_DENSITY * 1000),
-  apertureRadius: 0.02,
+  // Solid volume per second, defaulted for a *watchable* pour rather than a
+  // fast one. 400 g/s empties the grain budget in about 1.2 s, which is less
+  // time than it takes to see anything happen; 50 g/s spreads the same 200k
+  // grains over about ten seconds. The slider still reaches 20 kg/s. Note the
+  // test suites that care about throughput set this themselves rather than
+  // inheriting it, so this is a presentation choice and not a physics one.
+  flowRate: 50 / (SAND_PARTICLE_DENSITY * 1000),
+  apertureRadius: 0.01,
   // A flat opening the sand passes through, versus a source with volume. The
   // disc is the cleaner instrument -- one knob, one effect -- so it is the
   // default; see the note in Nozzle._spawn for how they differ.
@@ -99,10 +150,13 @@ export const values = {
   // fixed direction, the way tipping a bucket sends sand a particular way, and
   // moves where the pile builds. `pourSpread` is how far individual grains
   // scatter about that axis, and it is what actually makes the stream diverge.
-  // Divergence comes from the spread, not the tilt, so the default is a
-  // straight-down pour that still fans out.
-  pourAngle: 0,
-  pourSpread: 8,
+  // Divergence comes from the spread, not the tilt. The defaults are
+  // nonetheless a tilted, well-spread pour: a straight vertical fall into a
+  // circular landing zone is the symmetric case, and symmetric is exactly what
+  // hides an asymmetric bug. A hand tipping a bucket is both the more
+  // realistic starting point and the more revealing one.
+  pourAngle: 30,
+  pourSpread: 15,
   surgePeriod: 0.6,
   surgeDepth: 0.5,
   continuousPour: true,
@@ -116,10 +170,19 @@ export const values = {
   // reachable and means every grain is exactly the median size.
   sorting: Math.log(2) / 2,
   // Size limits, as multiples of the median. A log-normal is unbounded both
-  // ways, so both ends need a stop: unbounded above eventually draws a grain
-  // the spatial hash cannot size for, and unbounded below draws grains tens of
-  // times finer than the median that drift like dust instead of falling.
-  minGrainRatio: 0.1,
+  // ways, so both ends need a stop: unbounded below draws grains tens of times
+  // finer than the median that drift like dust instead of landing, and
+  // unbounded above draws grains that dominate the contact broad phase.
+  //
+  // Defaulted narrow (0.5x - 4x) rather than to the full slider range, because
+  // that is the window a wide pour is actually set to and the wide default was
+  // being closed by hand every session. The sliders still reach 0.02x and 48x.
+  // Note this window interacts with `sorting`: at the 2x default the stops sit
+  // about 2 sigma below and 4 above, so the low tail is genuinely trimmed, and
+  // at high sorting the window binds well before the sorting figure implies.
+  // The Derived block prints the resulting diameter range, which is the number
+  // to read when the two disagree.
+  minGrainRatio: 0.5,
   // Smallest a clump can be, as a multiple of the median grain. This is a
   // property of *fragmentation*, not of grain size: when a clump shatters, a
   // piece larger than this is still a clump and can shatter again, while a
@@ -127,7 +190,7 @@ export const values = {
   // recursing forever, and it is the only reason the threshold exists -- a
   // large grain is simply a large grain and is never promoted to a clump.
   minClumpSize: 3.5,
-  maxGrainRatio: 12,
+  maxGrainRatio: 4,
   // --- Clumps ---
   // Clumps get their own population rather than being drawn from the tail of
   // the grain distribution. That earlier design bundled two claims: that a
@@ -144,10 +207,21 @@ export const values = {
   //
   // Fraction of poured volume that arrives as clumps. Frequency falls out of
   // this and the clump size, which is more intuitive than setting a rate.
-  clumpFraction: 0.01,
+  //
+  // Defaulted high, at 10%, because 1% puts a clump on screen every few
+  // seconds and the clump path is the least-exercised part of the source.
+  // Something a viewer sees only occasionally is also something a bug hides
+  // in. The slider reaches 50%.
+  clumpFraction: 0.1,
   // Diameter as a multiple of the median grain, so it keeps its meaning as
   // grain size moves. Shown in mm, which updates with the median.
-  clumpSize: 17.1,
+  //
+  // 12x the median is 12 mm of default sand. Smaller than the 17.1x this used
+  // to be, and chosen for frequency rather than realism: volume is cubic, so
+  // dropping the width by a third gives nearly three times as many clumps out
+  // of the same volume fraction. More arrivals is what makes the behaviour
+  // observable, both on screen and in the statistics the clumps suite pools.
+  clumpSize: 12,
   clumpSorting: Math.log(1.5) / 2,
 
   // Impact speed at which a median clump breaks. Replaces a raw cohesion gain,
@@ -178,11 +252,19 @@ export const values = {
   avalancheGap: 3,
   slumpHalfLife: 0.1,
 
+  // --- Contacts (M3) ---
+  // Coulomb ratio at a grain-grain contact, dimensionless. Quartz on quartz is
+  // around 0.5. This is an *input*; the pile's repose angle is the output, and
+  // the two are not the same number -- see the help text.
+  friction: 0.5,
+  restitution: 0.2,
+
   // --- Exchange (M4) ---
-  // In grain diameters, so it keeps its meaning as grain size changes. 0 is
-  // meaningful: absorb as soon as a grain is covered.
+  // In grain diameters, so it keeps its meaning as grain size changes. Both
+  // ends of the slider are meaningful sentinels: 0 absorbs as soon as a grain
+  // is covered, Infinity never absorbs at all and is the pure-DEM reference
+  // run. A boolean for the latter would admit a state that contradicts this.
   activeLayerDepth: 2,
-  pureDEM: false,
   sizeMemory: true,
   // Live now -- it is what converts absorbed volume into surface height. At M4
   // height comes from the observed underside of the resting grains instead and
@@ -231,9 +313,34 @@ export const derived = {
   // Mean, not median. Volume cubes the size spread, so at 2x sorting the
   // average grain holds 72% more sand than the median one -- which is what any
   // "how many grains in a bucket" figure has to divide by.
+  // ⚠ The size limits are part of this, and leaving them out is wrong by a
+  // factor rather than by a rounding.
+  //
+  // A grain is `median * exp(s*Z)` for standard normal Z, so its volume is
+  // `Vmedian * exp(3s*Z)` and the untruncated mean is `exp(4.5 s^2)` times the
+  // median's. But Z is drawn truncated to the size limits, and volume cubes
+  // the spread, so the tails the limits remove are exactly the ones carrying
+  // the mean. The correction is the standard truncated-lognormal one: shift
+  // the bounds by the exponent and take the ratio of normal masses.
+  //
+  // This read correctly for years only because the default limits, 0.1x to
+  // 12x, sat at -6.6 and +7.2 sigma and truncated nothing. It was always
+  // wrong for a narrowed window, which is the configuration a wide pour is
+  // actually run in, and it became wrong by default when the limits moved to
+  // 0.5x-4x. At 5x sorting in that window the untruncated formula claims a
+  // mean of 18.4 median volumes against a true 5.9 -- a three-fold error in
+  // every "how many grains is that" figure on the panel.
   meanGrainVolume() {
     const s = values.sorting;
-    return derived.grainVolume() * Math.exp(4.5 * s * s);
+    const Vmed = derived.grainVolume();
+    if (s <= 1e-9) return Vmed;                     // uniform sand: no spread
+    const a = 3 * s;
+    const lo = Math.log(values.minGrainRatio) / s;
+    const hi = Math.log(values.maxGrainRatio) / s;
+    const mass = normalCdf(hi) - normalCdf(lo);
+    if (mass <= 1e-12) return Vmed;                 // degenerate window
+    const shifted = normalCdf(hi - a) - normalCdf(lo - a);
+    return Vmed * Math.exp(4.5 * s * s) * (shifted / mass);
   },
   minGrainDiameter() {
     return values.minGrainRatio * values.medianDiameter;
@@ -310,7 +417,7 @@ const ML_PER_S = { unit: 'mL/s', scale: (SAND_PARTICLE_DENSITY / SAND_BULK_DENSI
 
 // min/max are given in the FIRST unit listed and converted to SI on load, so
 // the slider curve does not move when the display unit is toggled.
-const SOON = ' Not implemented yet — this milestone builds the falling sand only.';
+const SOON = ' Not implemented yet — dimmed controls are waiting on a later milestone.';
 
 export const SCHEMA = [
   {
@@ -421,7 +528,7 @@ export const SCHEMA = [
 
   {
     key: 'clumpFraction', group: 'Clumps', label: 'Sand arriving as clumps',
-    units: [{ unit: '%', scale: 100 }], min: 0.05, max: 10, log: true, logZero: true,
+    units: [{ unit: '%', scale: 100 }], min: 0.05, max: 50, log: true, logZero: true,
     help: 'How much of the poured sand arrives already stuck together. How often clumps appear follows from this and the clump size — the Derived panel shows the resulting rate.',
   },
   // Stored as a multiple of the median so the slider range is scale-free, but
@@ -476,6 +583,18 @@ export const SCHEMA = [
   },
 
   {
+    key: 'friction', group: 'Pile', label: 'Grain friction',
+    units: [{ unit: '', scale: 1 }], min: 0.05, max: 1.5, log: true, logZero: true,
+    pending: true,
+    help: 'How strongly two grains resist sliding past each other, as a Coulomb ratio: the sideways force a contact can carry before it slips, divided by the force pressing the grains together. Quartz sand on quartz sand is about 0.5. This is the input the whole project turns on — the pile\'s repose angle is a result of it rather than a setting, and how the two relate is the thing being measured, so they are deliberately not the same number. Zero is reachable and worth trying: frictionless grains should spread into a puddle rather than a pile.' + SOON,
+  },
+  {
+    key: 'restitution', group: 'Pile', label: 'Bounciness',
+    units: [{ unit: '', scale: 1 }], min: 0, max: 0.9,
+    pending: true,
+    help: 'How much of an impact a grain keeps: 0 stops it dead, 1 would send it back up at the speed it arrived. Sand is low, around 0.1 to 0.3, but not zero — this is what produces the splash of grains scattering outward where the stream meets the pile. Pour spread cannot stand in for it, because that widens the stream in the air rather than at the point of impact.' + SOON,
+  },
+  {
     key: 'relaxation', group: 'Pile', label: 'Slump the surface (comparison arm)', type: 'bool',
     help: 'Let the pile surface collapse toward the repose angle on its own, instead of leaving it to the grains. Off by default and deliberately so: this project exists to find out what shape sand makes, and a surface that slumps to a dialed angle mostly hands that angle straight back. It is here so the two can be compared rather than argued about — pour the same sand twice and see whether the angle the friction produces agrees with the angle this rule was told to produce. The three sliders below drive this arm and nothing else.',
   },
@@ -497,13 +616,10 @@ export const SCHEMA = [
 
   {
     key: 'activeLayerDepth', group: 'Exchange', label: 'Active layer',
-    units: [{ unit: ' grains', scale: 1 }], min: 0.2, max: 20, log: true, logZero: true,
+    units: [{ unit: ' grains', scale: 1 }], min: 0.2, max: 20, log: true,
+    logZero: true, logInf: true,
     pending: true,
-    help: 'How deep the layer of individually simulated grains goes, counted in grain diameters. Anything buried deeper is absorbed into the pile surface to keep the grain budget bounded. 0 absorbs as soon as a grain is covered.' + SOON,
-  },
-  {
-    key: 'pureDEM', group: 'Exchange', label: 'Pure DEM (no absorption)', type: 'bool', pending: true,
-    help: 'Never absorb anything — simulate every grain forever. A diagnostic for checking that absorption is not changing the pile shape, not a usable setting: the grain budget fills in seconds.' + SOON,
+    help: 'How deep the layer of individually simulated grains goes, counted in grain diameters. Anything buried deeper is absorbed into the pile surface to keep the grain budget bounded. Both ends of this slider are special: 0 absorbs a grain as soon as it is covered, and ∞ never absorbs anything, which is pure DEM — every grain simulated forever. That end is the reference run for checking that absorption is not changing the pile shape, and it is a diagnostic rather than a usable setting, since the grain budget fills in seconds. Note the depth is a multiple of grain size while a pile is not, so no finite setting here means "never absorb" — only the ∞ detent does.' + SOON,
   },
   {
     key: 'sizeMemory', group: 'Exchange', label: 'Size memory', type: 'bool', pending: true,

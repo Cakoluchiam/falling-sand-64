@@ -79,18 +79,44 @@ check('an inverted window is repaired', values.minGrainRatio < values.maxGrainRa
   `[${values.minGrainRatio}, ${values.maxGrainRatio}]`);
 
 console.log('\nmean grain volume drives the bucket count');
+// ⚠ Swept across windows and sortings, not checked at one wide window.
+//
+// This test used to pin 0.1x-12x only, which at the default sorting sits at
+// -6.6 and +7.2 sigma and truncates nothing at all -- so it agreed with an
+// untruncated formula that ignored the size limits entirely, and kept
+// agreeing however narrow the real configuration got. Volume cubes the size
+// spread, so the tails the limits cut are the ones carrying the mean: at the
+// tight window and high sorting below, the untruncated form overstates by
+// more than threefold. A single-configuration check on a distribution
+// statistic is worth very little; the cases that bite are the ones where the
+// bounds actually bind.
+function measuredMeanVolume(n = 250000) {
+  const nz = new Nozzle(new Rng(9), new Noise(9));
+  let vs = 0;
+  for (let i = 0; i < n; i++) { const d = nz.sampleDiameter(values); vs += (Math.PI / 6) * d * d * d; }
+  return vs / n;
+}
+for (const [lo, hi, ratio, label] of [
+  [0.1, 12, 2, 'wide window, default sorting (truncates nothing)'],
+  [0.5, 4, 2, 'default window, default sorting'],
+  [0.5, 4, 5, 'default window, high sorting (bounds bind hard)'],
+  [0.8, 1.5, 3, 'very tight window'],
+  [0.1, 12, 8, 'wide window, extreme sorting'],
+]) {
+  values.minGrainRatio = lo; values.maxGrainRatio = hi;
+  values.sorting = Math.log(ratio) / 2;
+  const measured = measuredMeanVolume();
+  const derivedV = derived.meanGrainVolume();
+  const err = measured / derivedV - 1;
+  console.log(`  ${lo}x-${hi}x @ ${ratio}x sorting: measured ${measured.toExponential(3)}, ` +
+    `derived ${derivedV.toExponential(3)}  (${(err * 100).toFixed(1)}%)  -- ${label}`);
+  check(`mean volume matches sampling at ${lo}x-${hi}x, sorting ${ratio}x`,
+    Math.abs(err) < 0.03, `${(measured / derivedV).toFixed(3)}x`);
+}
+
 values.minGrainRatio = 0.1; values.maxGrainRatio = 12;
 values.sorting = Math.log(2) / 2;
 const r = sample(300000);
-let vs = 0;
-{
-  const n2 = new Nozzle(new Rng(9), new Noise(9));
-  for (let i = 0; i < 300000; i++) { const d = n2.sampleDiameter(values); vs += (Math.PI / 6) * d * d * d; }
-}
-const measured = vs / 300000;
-console.log(`  measured mean volume ${measured.toExponential(4)}, derived ${derived.meanGrainVolume().toExponential(4)}`);
-check('derived mean volume matches sampling', Math.abs(measured / derived.meanGrainVolume() - 1) < 0.03,
-  `${(measured / derived.meanGrainVolume()).toFixed(3)}x`);
 check('mean exceeds median volume', derived.meanGrainVolume() > derived.grainVolume());
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);

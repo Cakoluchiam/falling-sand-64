@@ -9,7 +9,7 @@
 // Pure over flat typed arrays. Takes the heightfield rather than importing it,
 // so it stays a function of its arguments.
 
-import { PHASE_RESTING } from './particles.js';
+import { PHASE_BALLISTIC, PHASE_AWAKE } from './particles.js';
 
 /**
  * Advance every airborne grain by `dt`, land whatever reaches the surface, and
@@ -26,13 +26,20 @@ export function stepBallistic(P, field, dt, o) {
   const useTurb = amp > 0 && o.curl;
   const curl = o.curl;
   const tmp = o.tmp;
+  const surf = o.surf;
+  // In grain *diameters*, so it keeps its meaning as grain size moves; the
+  // radius below carries the factor of two.
+  const handoffBand = o.handoffDepth * 2;
   const halfW = o.halfW, halfD = o.halfD;
   let lost = 0, eaten = 0;
 
   // Backwards, because free() swap-removes from the tail of `live`.
   for (let k = P.count - 1; k >= 0; k--) {
     const i = live[k];
-    if (phase[i] === PHASE_RESTING) continue;
+    // Only free flight belongs here. Anything handed to the contact solver is
+    // integrated by that solver instead, and integrating it twice would double
+    // its gravity.
+    if (phase[i] !== PHASE_BALLISTIC) continue;
 
     let fx = 0, fy = 0, fz = 0;
     if (useTurb) {
@@ -71,20 +78,29 @@ export function stepBallistic(P, field, dt, o) {
     vx[i] = nvx; vy[i] = nvy; vz[i] = nvz;
 
     const r = radius[i];
-    // The surface is sampled rather than assumed flat, which is the only thing
-    // standing on the heightfield until M3 builds the contact solver. Grains
-    // still stop dead where they meet it and will visibly interpenetrate each
-    // other; that is the motivation for M3, not a bug.
-    const surf = field.heightAt(px[i], pz[i]);
-    if (py[i] - r <= surf) {
-      py[i] = surf + r;
-      vx[i] = 0; vy[i] = 0; vz[i] = 0;
-      phase[i] = PHASE_RESTING;
+    const surfY = field.heightAt(px[i], pz[i]);
+    // ⚠ Hand off *before* touching, not on contact. Two different things make
+    // a grain miss a surface it should have hit, so the band has two terms: a
+    // large grain needs a depth proportional to its own size, and a fast one
+    // can step clean through a thin band inside a single flight step. Taking
+    // the larger covers both without making the band permanently wide, which
+    // would put slow grains into the solver long before they need to be there.
+    const speed = Math.hypot(vx[i], vy[i], vz[i]);
+    if (py[i] - surfY < Math.max(handoffBand * r, speed * dt)) {
+      phase[i] = PHASE_AWAKE;
+      // Arrive already outside the surface. The solver's first iteration is
+      // meant to resolve contact, not to undo a tunnelling event, and a grain
+      // that crossed the band in one step can be well inside by now.
+      field.sampleSurface(px[i], pz[i], surf);
+      const depth = r - (py[i] - surf[0]) * surf[2];
+      if (depth > 0) {
+        px[i] += surf[1] * depth; py[i] += surf[2] * depth; pz[i] += surf[3] * depth;
+      }
       // Nothing may come to rest inside a lump. Grains are ballistic right up
-      // to the moment they land, so a clump and the sand around it pass freely
-      // through each other on the way down -- which is correct, and is why the
-      // two streams need not take turns leaving the nozzle. It only becomes
-      // wrong once they stop.
+      // to the moment they arrive, so a clump and the sand around it pass
+      // freely through each other on the way down -- which is correct, and is
+      // why the two streams need not take turns leaving the nozzle. It only
+      // becomes wrong once they stop.
       if (isAgg[i]) {
         eaten += P.eatGrainsInside(i);
       } else if (P.fallingClumpContaining(i) >= 0) {

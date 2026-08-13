@@ -17,3 +17,7 @@ desktop.ini
 
 # Local tooling
 .claude/
+# Keeps the machine awake during long unattended runs -- a personal hack, and
+# the test suite takes minutes, so it earns its place locally without being
+# something the repo should carry.
+.claudenosleep.ps1

@@ -8,6 +8,27 @@ const { Nozzle } = await import(base + 'source.js');
 let failures = 0;
 const check = (n, c, x = '') => { console.log(c ? `  ok   ${n}` : `  FAIL ${n} ${x}`); if (!c) failures++; };
 
+// This suite is minutes long where every other one is seconds, so CI runs it
+// as three jobs and the matrix wall clock becomes the slowest part rather than
+// their sum. `node test/clumps.mjs` with no argument still runs everything,
+// which is what you want while iterating.
+//
+// ⚠ Deliberately one file with three entry points rather than three files.
+// Every tolerance below is a counting tolerance calibrated against the pinned
+// values above, and copying those pins into three files is how they drift
+// apart -- this suite has already been broken once by a pin it did not have.
+// One place for them, whatever the CI matrix does.
+//
+//   stream  ~20% of the runtime   the two regressions, and resting inside a lump
+//   rate    ~37%                  pooled rate, volume fraction, slider scaling
+//   spread  ~41%                  run-to-run consistency against Poisson
+const only = process.argv[2];
+if (only && !['stream', 'rate', 'spread'].includes(only)) {
+  console.error(`unknown part "${only}". Known: stream, rate, spread`);
+  process.exit(2);
+}
+const wants = (name) => !only || only === name;
+
 values.medianDiameter = 0.001;
 values.sorting = Math.log(1.4) / 2;
 values.minClumpSize = 3.5;
@@ -17,6 +38,14 @@ values.clumpSize = 17.1;
 values.clumpSorting = Math.log(1.5) / 2;
 values.continuousPour = true;
 values.surgeDepth = 0;
+// ⚠ Pinned like the rest, and it is the one that was missing. Every tolerance
+// below is a counting tolerance, and clump counts scale with the volume poured
+// -- so this suite's entire error budget rode on a panel default. When the
+// user-facing flow rate dropped from 400 g/s to 50 for watchability, counts
+// fell eightfold and three unrelated checks failed at once, none of them
+// because anything about clumps had changed. Sections that deliberately vary
+// the rate save and restore it around themselves.
+values.flowRate = 400 / (SAND_PARTICLE_DENSITY * 1000);
 const dt = 1 / 60;
 
 console.log('setup');
@@ -44,8 +73,8 @@ function pour(seed, seconds) {
 }
 
 // ---- REGRESSION: clumps must not trail the sand ----
-console.log('clumps arrive with the sand, not after it');
-{
+if (wants('stream')) {
+  console.log('clumps arrive with the sand, not after it');
   const P = new Particles(200000);
   const nz = new Nozzle(new Rng(7), new Noise(7));
   let lastGrain = -1, lastClump = -1, fill = -1, prevCount = 0, prevClumps = 0;
@@ -68,6 +97,9 @@ console.log('clumps arrive with the sand, not after it');
 // out of the same volume budget as the grains, one clump was 5000 grains' worth
 // of it, and the sand behind it visibly thinned for a tenth of a second. What
 // absorbs a large body is the likelihood of the next one, not the flow.
+// Body left at its original indentation rather than shifted a level, so the
+// gate reads as a gate and the diff stays about the split.
+if (wants('stream')) {
 console.log('\na clump does not interrupt the sand');
 // Run it at the reference pour and at a slow one. A clump is a fixed slug of
 // volume, so the slower the sand the longer the hole: 1.25 frames of flow at
@@ -136,10 +168,11 @@ for (const [label, gramsPerSecond] of [['400 g/s', 400], ['60 g/s', 60]]) {
     `${(baseline / dt / values.flowRate).toFixed(4)} vs ${1 - values.clumpFraction}`);
 }
 values.flowRate = referenceFlow;
+}
 
 // ---- Rate and volume fraction, pooled ----
-console.log('\npooled over 8 x 120 s');
-{
+if (wants('rate')) {
+  console.log('\npooled over 8 x 120 s');
   const SECONDS = 120, SEEDS = 8;
   let clumps = 0, grains = 0, clumpVol = 0, grainVol = 0, emitted = 0;
   let diams = [], gaps = [];
@@ -185,8 +218,8 @@ console.log('\npooled over 8 x 120 s');
 // A pour is short. Under a memoryless trigger the clump count per pour is
 // Poisson, so variance equals the mean and one pour shows three clumps while
 // the next shows none. Crediting per emitted body should tighten that a lot.
-console.log('\nconsistency across 40 separate 30 s pours');
-{
+if (wants('spread')) {
+  console.log('\nconsistency across 40 separate 30 s pours');
   const RUNS = 40, SECS = 30;
   const counts = [];
   for (let s = 1; s <= RUNS; s++) counts.push(pour(s * 31, SECS).clumps);
@@ -208,8 +241,8 @@ console.log('\nconsistency across 40 separate 30 s pours');
 // them be metered separately -- there is no contact physics in freefall, so a
 // clump and the sand it left the nozzle with need not take turns. It only
 // becomes wrong once they stop.
-console.log('\nnothing comes to rest inside a lump');
-{
+if (wants('stream')) {
+  console.log('\nnothing comes to rest inside a lump');
   const P = new Particles(1000);
   const place = (x, y, z, r, agg, phase) => {
     const i = P.alloc();
@@ -259,6 +292,8 @@ console.log('\nnothing comes to rest inside a lump');
 }
 
 // ---- Controls ----
+// Indentation left alone here too; see the note on the first gated section.
+if (wants('rate')) {
 console.log('\ncontrols');
 function rateAt(frac, secs = 120, seeds = 4) {
   values.clumpFraction = frac;
@@ -266,13 +301,47 @@ function rateAt(frac, secs = 120, seeds = 4) {
   for (let s = 1; s <= seeds; s++) n += pour(s * 13, secs).clumps;
   return { perSec: n / (secs * seeds), n };
 }
-const r0 = rateAt(0, 30, 2), r1 = rateAt(0.005), r2 = rateAt(0.02);
+// ⚠ Pinned, not inherited from the panel defaults.
+//
+// This statistic is a ratio of two clump counts, so its precision is set by
+// how many clumps get counted -- which depends on flow rate and clump size.
+// Leaving those on the UI defaults means a cosmetic change to the panel
+// silently changes this test's error bar, and that is exactly how it came to
+// be flaky: it carried a band that was comfortable under one set of defaults
+// and 1.6 sigma under the next. Measured here rather than assumed, so these
+// three lines are part of the measurement and not decoration.
+values.flowRate = 50 / (SAND_PARTICLE_DENSITY * 1000);
+values.clumpSize = 12;
+values.clumpSorting = Math.log(1.5) / 2;
+
+// Measured at 10% -> 40%. The window is chosen for precision, not realism:
+// the run cost is grain emission and does not vary with clump fraction, so
+// counting where clumps are plentiful is strictly cheaper per unit precision.
+//
+// Pooled ratio over five independent 4-seed groups, at the flow rate above:
+//
+//     0.5% ->  2%   sd 0.25   (at the old 400 g/s flow)
+//       2% ->  8%   sd 0.45
+//      10% -> 40%   sd 0.10
+//
+// The middle row is the trap. It was sd 0.15 at 400 g/s, and dropping the
+// user-facing flow rate to 50 g/s costs eight-fold in clump counts -- so
+// keeping that window would have left a +-0.45 band sitting at one sigma,
+// failing about a third of runs, purely because a presentation default moved.
+//
+// +-0.4 against sd 0.10 is nominally four sigma. That deliberately exceeds
+// three: an sd estimated from five groups is itself uncertain by roughly a
+// third, so a band drawn tight against the point estimate would be a band
+// drawn against noise. It is still a 10% claim about a scaling law, and every
+// window measured is unbiased -- means of 3.995, 4.139 and 4.018 against 4.00.
+const r0 = rateAt(0, 30, 2), r1 = rateAt(0.10), r2 = rateAt(0.40);
 const ratio = r2.perSec / r1.perSec;
-console.log(`  0% -> ${r0.perSec.toFixed(2)}/s,  0.5% -> ${r1.perSec.toFixed(2)}/s (n=${r1.n}),  2% -> ${r2.perSec.toFixed(2)}/s (n=${r2.n})`);
-console.log(`  ratio ${ratio.toFixed(2)}  (want 4.00)`);
+console.log(`  0% -> ${r0.perSec.toFixed(2)}/s,  10% -> ${r1.perSec.toFixed(2)}/s (n=${r1.n}),  40% -> ${r2.perSec.toFixed(2)}/s (n=${r2.n})`);
+console.log(`  ratio ${ratio.toFixed(2)}  (want 4.00, measured sd 0.10, band 0.40)`);
 check('zero emits no clumps', r0.n === 0);
 check('rate scales with the fraction slider', Math.abs(ratio - 4) < 0.4, ratio.toFixed(2));
 values.clumpFraction = 0.01;
+}
 
 console.log(failures === 0 ? '\nALL PASS' : `\n${failures} FAILURE(S)`);
 process.exit(failures === 0 ? 0 : 1);

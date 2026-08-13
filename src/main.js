@@ -4,9 +4,10 @@ import { CONFIG, values, derived, SCHEMA, domainBounds, enforceConstraints, SAND
 import { Rng } from './rng.js';
 import { Noise, CurlField } from './noise.js';
 import { SHARED_MEMORY_AVAILABLE } from './shared.js';
-import { Particles, PHASE_RESTING } from './particles.js';
+import { Particles, PHASE_BALLISTIC } from './particles.js';
 import { Nozzle } from './source.js';
 import { stepBallistic } from './ballistic.js';
+import { ContactSolver } from './contact.js';
 import { HexField, relaxRateFromHalfLife } from './hexfield.js';
 import { initGL, GLUnavailableError, resizeToDisplay } from './gl/context.js';
 import { OrbitCamera } from './gl/camera.js';
@@ -15,6 +16,11 @@ import { TerrainRenderer } from './gl/terrain.js';
 import { buildPanel } from './ui.js';
 
 const DEG = Math.PI / 180;
+
+// Below this, a grain counts as not moving for the purpose of deciding a run
+// has finished. A millimetre a second is far under anything visible and well
+// over the residual jitter of a contact being held.
+const SETTLED_SPEED = 0.001;
 
 const LIGHT_DIR = (() => {
   const d = new Float32Array([0.45, 0.82, 0.35]);
@@ -49,6 +55,7 @@ class App {
     this.field = new HexField(CONFIG.gridW, CONFIG.gridH, CONFIG.cellSpacing);
     this.renderer = new GrainRenderer(gl, CONFIG.grainCapacity);
     this.terrain = new TerrainRenderer(gl, this.field);
+    this.contacts = new ContactSolver(CONFIG.grainCapacity);
     this._surf = new Float64Array(4);
 
     this.rng = new Rng(values.seed);
@@ -60,6 +67,7 @@ class App {
     this.paused = false;
     this.stepOnce = false;
     this.lastSubsteps = 0;
+    this.substepDemand = 0;
     this.restarts = 0;
     this.reset();
 
@@ -93,13 +101,34 @@ class App {
   // explicit one: at the short end of the half-life slider a 1/60 s step
   // overshoots and rings, where 1/240 s does not.
   substep(h) {
+    this.contacts.step(this.particles, this.field, h, {
+      gravity: values.gravity,
+      friction: values.friction,
+      restitution: values.restitution,
+      iterations: CONFIG.contactIterations,
+      sleepSpeed: CONFIG.sleepSpeed,
+      sleepSubsteps: CONFIG.sleepSubsteps,
+      stirSpeed: CONFIG.sleepSpeed * CONFIG.stirFactor,
+      // Scaled to the substep, because the overlap a settled contact carries
+      // is g*dt^2 and the wake threshold has to sit above it.
+      wakeDepth: CONFIG.wakeDepthFactor * values.gravity * h * h,
+      // Level 0 of the broad-phase hierarchy. The median grain is the right
+      // scale: finer wastes levels on empty cells, coarser piles ordinary
+      // grains into one bucket and the 27-cell neighbourhood stops being cheap.
+      baseCell: values.medianDiameter,
+    });
     if (!values.relaxation) return;
-    this.field.relax(
+    // The surface moving is the one disturbance a sleeping grain cannot feel
+    // through its contacts, so anything the slump rule actually moved wakes
+    // the pile. Relaxation is off by default, which is why this can afford to
+    // be blunt; M4 will move the surface every frame and will need better.
+    const moved = this.field.relax(
       h,
       Math.tan(values.reposeAngle * DEG),
       Math.tan(derived.staticAngle() * DEG),
       relaxRateFromHalfLife(values.slumpHalfLife),
     );
+    if (moved > 0) this.contacts.wakeAll(this.particles);
   }
 
   // Nothing left to watch: everything has landed and no more sand can come out,
@@ -107,8 +136,17 @@ class App {
   isSettled() {
     if (values.flowRate <= 0) return false;   // an empty nozzle is not a finished run
     const P = this.particles;
+    // ⚠ A speed query, not the sleep rule. Until M3's sleeping step lands,
+    // nothing is ever marked PHASE_RESTING -- grains stay awake in the contact
+    // solver indefinitely -- so testing the phase here would mean auto-restart
+    // silently never fires again. Asking whether anything is actually moving
+    // answers the question this method is for without pre-empting the
+    // hysteresis and wake rule that sleeping needs.
     for (let k = 0; k < P.count; k++) {
-      if (P.phase[P.live[k]] !== PHASE_RESTING) return false;
+      const i = P.live[k];
+      if (P.phase[i] === PHASE_BALLISTIC) return false;
+      const vx = P.vx[i], vy = P.vy[i], vz = P.vz[i];
+      if (vx * vx + vy * vy + vz * vz > SETTLED_SPEED * SETTLED_SPEED) return false;
     }
     const storeFull = P.count >= P.capacity;
     const pourDone = !values.continuousPour && this.nozzle.emittedVolume >= derived.dropVolume();
@@ -118,25 +156,21 @@ class App {
   simulate(rawDt) {
     const h = 1 / CONFIG.substepHz;
     this.field.packingFraction = values.packingFraction;
-    this.accumulator += rawDt;
-    const start = performance.now();
-    let steps = 0;
-    while (this.accumulator >= h && steps < CONFIG.maxSubstepsPerFrame) {
-      this.substep(h);
-      this.accumulator -= h;
-      steps++;
-      if (performance.now() - start > CONFIG.frameBudgetMs) break;
-    }
-    // Shed any backlog past the cap. Without this an overloaded frame queues
-    // work that makes the next frame worse, and the tab spirals instead of
-    // simply running slow.
-    const maxBacklog = h * CONFIG.maxSubstepsPerFrame;
-    if (this.accumulator > maxBacklog) this.accumulator = maxBacklog;
-    this.lastSubsteps = steps;
+
+    // ⚠ Both loops below run on the *simulation* clock, so both scale with
+    // simSpeed. They did not always: the substep accumulator took raw frame
+    // time while flight took `rawDt * simSpeed`, so at 10x the sand fell ten
+    // times faster while the surface slumped at one. That was survivable only
+    // because relaxation is an off-by-default arm nothing else reads. It stops
+    // being survivable the moment the contact solver lives in substep():
+    // contacts would resolve at a tenth of the rate grains arrive, and every
+    // run at a speed multiplier would measure a different material -- with the
+    // discrepancy looking like a friction result rather than a clock bug.
+    const simDt = rawDt * values.simSpeed;
 
     // The turbulence field follows the pour height, since that slider spans
     // three orders of magnitude and a fixed box would be far too coarse at the
-    // short end.
+    // short end. Rebuilt ahead of the flight loop, which is what samples it.
     const { min, size } = domainBounds(values.nozzleHeight * 1.15);
     if (this.curl.setBounds(min, size)) this.curl.builtAt = -Infinity;
     if (values.turbAmplitude > 0) {
@@ -148,7 +182,7 @@ class App {
     // Simulation speed stretches the frame, but a 10x frame integrated in one
     // step would move a grain several centimetres between samples. Subdivide so
     // running fast does not also mean running wrong.
-    let remaining = rawDt * values.simSpeed;
+    let remaining = simDt;
     let iters = 0;
     while (remaining > 1e-9 && iters < CONFIG.maxBallisticIters) {
       const step = Math.min(remaining, CONFIG.maxBallisticStep);
@@ -161,6 +195,44 @@ class App {
       remaining -= step;
       iters++;
     }
+
+    // ⚠ Substeps run *after* the flight loop, not before. The contact solver
+    // goes in here at M3, and it has to act on where grains are now: a grain
+    // landing mid-frame must be solved this frame rather than left
+    // interpenetrating until the next one. The handoff test lives in the
+    // flight step, so integrate -> hand off -> solve is the only order that
+    // closes that gap.
+    this.accumulator += simDt;
+    this.substepDemand = Math.floor(this.accumulator / h);
+    let steps = 0;
+    // ⚠ The budget clock starts here, not at the top of the frame. Charging
+    // flight against it was tried and measured, and it is worse: flight is not
+    // elastic -- it has to finish or grains hang in mid-air -- so the only
+    // thing the budget can shed is substeps, and flight peaks at exactly the
+    // moment substeps matter most. At 100-140k grains in flight a frame spent
+    // 12.6-14.4 ms integrating before reaching here, which cut substeps from
+    // 4 to 1 and backed demand up to 12, throttling the contact solver to
+    // 60 Hz through the whole pile-forming phase. Flight is bounded by the
+    // grain cap and maxBallisticIters and cannot spiral, so budgeting it buys
+    // nothing. Total frame cost is therefore flight + up to frameBudgetMs,
+    // and bringing that down is sleeping's job (M3) and absorption's (M4).
+    const start = performance.now();
+    while (this.accumulator >= h && steps < CONFIG.maxSubstepsPerFrame) {
+      this.substep(h);
+      this.accumulator -= h;
+      steps++;
+      if (performance.now() - start > CONFIG.frameBudgetMs) break;
+    }
+    // Shed any backlog past the cap. Without this an overloaded frame queues
+    // work that makes the next frame worse, and the tab spirals instead of
+    // simply running slow. A high simSpeed now reaches this on purpose -- 10x
+    // at 60 fps asks for 40 substeps against a cap of 8 -- so the shortfall
+    // shows up in the HUD as a starved solve rather than silently running the
+    // contacts at the wrong rate, which is what the old code did.
+    const maxBacklog = h * CONFIG.maxSubstepsPerFrame;
+    if (this.accumulator > maxBacklog) this.accumulator = maxBacklog;
+    this.lastSubsteps = steps;
+
     this.frameIndex++;
   }
 
@@ -172,7 +244,9 @@ class App {
       curl: this.curl,
       halfW: CONFIG.domainWidth / 2,
       halfD: CONFIG.domainDepth / 2,
+      handoffDepth: CONFIG.handoffDepth,
       tmp: this._tmp,
+      surf: this._surf,
     });
     this.lostVolume += lost;
     this.eatenVolume += eaten;
@@ -258,7 +332,12 @@ class App {
     const grams = emitted * SAND_PARTICLE_DENSITY * 1000;
 
     const lines = [
-      `${fps.toFixed(0)} fps   ${avg.toFixed(1)} ms   sim ${values.simSpeed.toFixed(2)}x`,
+      `${fps.toFixed(0)} fps   ${avg.toFixed(1)} ms   sim ${values.simSpeed.toFixed(2)}x` +
+        `   substeps ${this.lastSubsteps}/${this.substepDemand}` +
+        // The contact solver lives in these substeps from M3. Running fewer
+        // than asked is the failure mode that reads as soft physics rather
+        // than as overload, so it is on the HUD before anything depends on it.
+        (this.lastSubsteps < this.substepDemand ? ' STARVED' : ''),
       `grains ${P.count} / ${P.capacity}   flight ${phases.ballistic}   resting ${phases.resting}` +
         `   lumps ${P.aggCount}`,
       `poured ${grams < 1000 ? grams.toFixed(1) + ' g' : (grams / 1000).toFixed(2) + ' kg'}` +

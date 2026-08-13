@@ -53,8 +53,16 @@ node test/run.mjs pour       one suite
 
 Needs Node 22.7 or newer: the sources are ES modules in `.js` files with no
 `package.json` to declare it, so Node has to recognise the module syntax on its
-own. The runner checks and says so rather than failing obscurely. Every suite
-runs on push and on every pull request.
+own. The runner checks and says so rather than failing obscurely.
+
+Every suite runs on Node 22 and 24 on push and on every pull request, as a
+matrix rather than one job — `clumps` takes minutes while the rest take seconds,
+so fanning out puts the wall clock at the slowest suite instead of their sum. A
+single `all-tests` job aggregates the matrix into one check. Branch protection
+is not enabled, and the gate exists so that turning it on later is a matter of
+requiring that one name rather than every matrix job — which would otherwise
+need re-editing each time the matrix changed. Adding a suite means adding it to
+`SUITES` in `test/run.mjs` and to the matrix list; nothing else.
 
 No framework and no dependencies. The suites are less about catching crashes
 than about pinning down behaviour that is invisible from the code — that the

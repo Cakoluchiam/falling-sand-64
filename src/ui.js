@@ -9,22 +9,36 @@ import { toDisplay, fromDisplay, values, derived, SAND_PARTICLE_DENSITY } from '
 
 const RESOLUTION = 1000;
 
+// A log slider can reserve either end for an exact sentinel: `logZero` takes
+// position 0 for a true 0, `logInf` takes the top position for Infinity. Both
+// are values the log scale cannot represent at all, and both are physically
+// meaningful rather than decorative -- 0 friction, or an active layer so deep
+// that absorption never fires. `logInf` exists because "never" is not a large
+// number: the active layer is a multiple of grain size while a pile's depth is
+// not, so no finite setting means never, and a boolean saying so alongside the
+// slider would admit a state where the two disagree.
+const firstPos = (s) => (s.logZero ? 1 : 0);
+const lastPos = (s) => (s.logInf ? RESOLUTION - 1 : RESOLUTION);
+
 function toSlider(s, si) {
   if (s.logZero && si <= 0) return 0;
+  if (s.logInf && !Number.isFinite(si)) return RESOLUTION;
   if (s.log) {
     const lo = Math.log(s.minSI), hi = Math.log(s.maxSI);
     const t = (Math.log(Math.max(si, s.minSI)) - lo) / (hi - lo);
-    // Position 0 is reserved for the exact zero detent.
-    return s.logZero ? 1 + t * (RESOLUTION - 1) : t * RESOLUTION;
+    const a = firstPos(s), b = lastPos(s);
+    return a + t * (b - a);
   }
   return ((si - s.minSI) / (s.maxSI - s.minSI)) * RESOLUTION;
 }
 
 function fromSlider(s, pos) {
   if (s.logZero && pos <= 0) return 0;
+  if (s.logInf && pos >= RESOLUTION) return Infinity;
   if (s.log) {
     const lo = Math.log(s.minSI), hi = Math.log(s.maxSI);
-    const t = s.logZero ? (pos - 1) / (RESOLUTION - 1) : pos / RESOLUTION;
+    const a = firstPos(s), b = lastPos(s);
+    const t = (pos - a) / (b - a);
     return Math.exp(lo + t * (hi - lo));
   }
   return s.minSI + (pos / RESOLUTION) * (s.maxSI - s.minSI);
@@ -33,6 +47,9 @@ function fromSlider(s, pos) {
 // Three significant figures, without exponent notation for anything a person
 // would plausibly read off a panel.
 function format(v) {
+  // A `logInf` slider parked at its top detent. Without this the exponent
+  // branch renders it as "Infinityk".
+  if (!Number.isFinite(v)) return v > 0 ? '∞' : '−∞';
   if (v === 0) return '0';
   const a = Math.abs(v);
   if (a >= 10000) return (v / 1000).toFixed(1) + 'k';
@@ -188,7 +205,12 @@ export function buildPanel(container, schema, vals, onChange) {
       `breaks to  ${format(derived.minClumpDiameter() * 1000)} mm min` +
         ` (~${format(derived.fragmentsPerClump())} pieces)`,
       `bucket     ${(bucketGrains / 1e6).toFixed(1)}M grains, pours in ${format(pourSeconds)} s`,
-      `active layer ${format(derived.activeLayerMetres() * 1000)} mm`,
+      // At the slider's top detent this is not a very deep layer, it is the
+      // absence of absorption, and a number with a unit would read as the
+      // former.
+      `active layer ${Number.isFinite(derived.activeLayerMetres())
+        ? `${format(derived.activeLayerMetres() * 1000)} mm`
+        : 'never absorbs (pure DEM)'}`,
       `static angle ${derived.staticAngle().toFixed(1)}°`,
     ].join('\n');
   }
