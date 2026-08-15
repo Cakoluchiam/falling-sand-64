@@ -470,7 +470,17 @@ export class ContactSolver {
     let asleep = 0;
     for (let k = 0; k < n; k++) {
       const i = live[k];
-      if (phase[i] === PHASE_RESTING) { asleep++; continue; }
+      // ⚠ The timer keeps running after the grain retires, and that is not
+      // bookkeeping for its own sake. M4's absorption needs *how long* a grain
+      // has been still, not merely that it passed the sleep test: quiescence
+      // is a stricter threshold layered on this same timer, and the plan says
+      // so. Stopping the count here froze it at `sleepSubsteps` for every
+      // sleeper, so any `quiescenceSubsteps` above that was unreachable and a
+      // sweep across it would have measured one point while appearing to
+      // measure a range -- the vacuous-test pattern, arriving early enough to
+      // catch. Float32 counts integers exactly to 2^24, which is nineteen
+      // hours of substeps, and saturates rather than wrapping past it.
+      if (phase[i] === PHASE_RESTING) { asleep++; P.restTimer[i]++; continue; }
       if (phase[i] !== PHASE_AWAKE) continue;
       const speed2 = vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i];
       if (supported[i] && speed2 < o.sleepSpeed * o.sleepSpeed) {

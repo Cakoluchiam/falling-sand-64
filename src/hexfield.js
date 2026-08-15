@@ -288,7 +288,7 @@ export class HexField {
       this._addTo(t.i1, t.w1, volume, logV);
       this._addTo(t.i2, t.w2, volume, logV);
     } else {
-      const cells = this._disc(x, z, splatRadius);
+      const cells = this.discCells(x, z, splatRadius);
       for (let k = 0; k < cells.length; k += 2) {
         this._addTo(cells[k], cells[k + 1], volume, logV);
       }
@@ -326,7 +326,7 @@ export class HexField {
       removed += this._takeFrom(t.i1, volume * t.w1);
       removed += this._takeFrom(t.i2, volume * t.w2);
     } else {
-      const cells = this._disc(x, z, splatRadius);
+      const cells = this.discCells(x, z, splatRadius);
       for (let k = 0; k < cells.length; k += 2) {
         removed += this._takeFrom(cells[k], volume * cells[k + 1]);
       }
@@ -339,7 +339,13 @@ export class HexField {
   // summing to 1. Cells off the edge are simply not enumerated and the
   // remaining weights absorb their share, which keeps deposition exact at the
   // boundary. Falls back to the triangle when the disc catches no centre.
-  _disc(x, z, radius) {
+  //
+  // Public because M4's extrema pass needs the *same* set of cells a deposit
+  // spreads over, weights ignored: a grain must register its underside across
+  // every cell its volume would land in, or the engulfment guard has a hole
+  // exactly under the rim of the large grains it was written for. Two
+  // enumerations that agree on paper are how the one-resolution rule rots.
+  discCells(x, z, radius) {
     const out = [];
     const s = this.s, rowH = s * SQRT3_2;
     const r0 = Math.max(0, Math.ceil((z - radius - this.originZ) / rowH));

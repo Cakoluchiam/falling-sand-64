@@ -42,6 +42,11 @@ const SUITES = [
   ['contact-pairs', 'contact.mjs', 'grain against grain: separation, weighting, stacks, piles', 'pairs'],
   ['contact-sleep', 'contact.mjs', 'retiring settled grains, and waking them again', 'sleep'],
   ['contact-repose', 'contact.mjs', 'friction holds the pile up, and the footprint is round', 'repose'],
+  // `exchange` is split from the start, for the same reason. Parts are
+  // registered here only once their section exists -- the suite exits non-zero
+  // on a part that runs no checks, so a name added early is red rather than a
+  // job that passes while testing nothing.
+  ['exchange-producers', 'exchange.mjs', 'per-frame passes: grain extrema, contact adjacency, rest timers', 'producers'],
   // `clumps` is minutes where the rest are seconds, so it is split into three
   // parts that CI runs as separate jobs. A fourth element is the argument
   // handed to the script; everything else runs whole. The parts share one file

@@ -69,6 +69,16 @@ const SHIFT_Y = 2 ** 17;
 const COORD_MIN = -BIAS;
 const COORD_MAX = BIAS - 1;
 
+// How far past touching two grains still count as in contact, as a fraction of
+// the sum of their radii. See `buildAdjacency`: a held contact oscillates about
+// the contact distance by the substep's gravity impulse, so a strict test would
+// flicker. Matches the slack the solver's restitution pass already allows.
+// Exported so a test can brute-force the same set rather than a nearby one: a
+// contact predicate checked against a slightly different tolerance agrees on
+// almost every pair and disagrees exactly on the marginal ones, which are the
+// pairs any bug here would live in.
+export const CONTACT_SLACK = 0.01;
+
 // Arbitrary large primes; the usual choice for spatial hashing.
 const P1 = 73856093;
 const P2 = 19349663;
@@ -107,6 +117,15 @@ export class GrainHash {
     this.baseCell = 0;
     this.activeLevels = 0;
     this.count = 0;
+
+    // Adjacency, allocated on first use. Nothing in the substep path touches
+    // it -- it is M4's structure, built once a frame -- so a run without
+    // absorption pays nothing for it.
+    this.adjStart = null;
+    this.adjCursor = null;
+    this.adjList = null;
+    this.adjPairBuf = null;
+    this.adjPairs = 0;
   }
 
   cellSize(level) {
@@ -235,6 +254,106 @@ export class GrainHash {
         }
       }
     }
+  }
+
+  /**
+   * Symmetric adjacency over the *touching* pairs, in CSR form: the
+   * neighbours of grain `i` are `adjList[adjStart[i] .. adjStart[i+1])`, and
+   * `adjStart[i+1] - adjStart[i]` is its contact count. Returns the number of
+   * distinct pairs.
+   *
+   * ## Why this exists rather than calling forEachNeighbour per grain
+   *
+   * `forEachNeighbour` is a *pair* primitive, not a neighbourhood query, and
+   * the difference is easy to miss because the name reads like the latter. It
+   * searches coarser levels only and drops same-level lower indices, both so
+   * that one sweep of the population yields each pair exactly once. Ask it for
+   * "grain i's neighbours" and it answers with a subset: every grain finer
+   * than `i` is missing, which for a clump resting in sand is most of what is
+   * touching it. M4's burial measure asks whether a grain's sky is covered in
+   * every direction, so a subset is not an approximation of the answer -- it
+   * is a different question.
+   *
+   * Widening the search downward is not the fix. The 3x3x3 bound holds only
+   * toward coarser levels, because it rests on the *resident's* radius being
+   * at most half its own cell. Searching level `L` from a grain at `Li > L`
+   * needs radius `ceil(r_i / cellSize(L)) + 1` cells, which grows as
+   * `2^(Li-L)` -- 15 cubed at a 12x size ratio, per candidate.
+   *
+   * So the pairs are enumerated exactly as they always were, and each is
+   * pushed into *both* rows. Symmetric by construction, and it reuses the
+   * once-only contract instead of working around it.
+   *
+   * Row lengths are not known in advance, so this is a count-then-scatter like
+   * the rebuild above -- but the counting pass **keeps the pairs it found**
+   * rather than re-deriving them. Measured, one broad-phase sweep of a settled
+   * 3000-grain heap is 3.3 ms and the narrow phase inside it is noise: the
+   * cost is candidate enumeration, roughly fifty per grain, and running it
+   * twice doubled the whole build. Scattering from a flat pair buffer instead
+   * makes the second pass linear in the *contacts*, which is an order of
+   * magnitude smaller than the candidates.
+   */
+  buildAdjacency(P, tolerance = CONTACT_SLACK) {
+    const cap = this.capacity;
+    if (!this.adjStart) {
+      this.adjStart = new Int32Array(cap + 1);
+      this.adjCursor = new Int32Array(cap);
+      this.adjList = new Int32Array(1024);
+      this.adjPairBuf = new Int32Array(2048);
+    }
+    const start = this.adjStart;
+    start.fill(0);
+    this.adjPairs = 0;
+    if (this.count === 0) return 0;
+
+    const { px, py, pz, radius } = P;
+    const sorted = this.sorted, n = this.count;
+    // A settled contact is not at exactly touching: gravity drives it g*dt^2
+    // in and the projection pushes it back out, so it breathes about the
+    // contact distance. Judging contact on `<` alone would drop half a
+    // settled pile's contacts at random every frame, which the burial score
+    // would read as a surface opening and closing.
+    const slack = (1 + tolerance) * (1 + tolerance);
+    let pairs = 0;
+    let cur = -1, xi = 0, yi = 0, zi = 0, ri = 0;
+
+    // One closure for the whole build rather than one per grain. `cur` is
+    // captured by reference, so reassigning it below re-aims the same closure.
+    const collect = (j) => {
+      const dx = xi - px[j], dy = yi - py[j], dz = zi - pz[j];
+      const sum = ri + radius[j];
+      if (dx * dx + dy * dy + dz * dz >= sum * sum * slack) return;
+      if (pairs * 2 >= this.adjPairBuf.length) {
+        const grown = new Int32Array(this.adjPairBuf.length * 2);
+        grown.set(this.adjPairBuf);
+        this.adjPairBuf = grown;
+      }
+      const buf = this.adjPairBuf;
+      buf[pairs * 2] = cur; buf[pairs * 2 + 1] = j;
+      pairs++;
+      start[cur + 1]++; start[j + 1]++;
+    };
+
+    for (let s = 0; s < n; s++) {
+      cur = sorted[s];
+      xi = px[cur]; yi = py[cur]; zi = pz[cur]; ri = radius[cur];
+      this.forEachNeighbour(P, cur, collect);
+    }
+
+    for (let k = 0; k < cap; k++) start[k + 1] += start[k];
+    const need = pairs * 2;
+    if (this.adjList.length < need) this.adjList = new Int32Array(need * 2);
+    const list = this.adjList, cursor = this.adjCursor, buf = this.adjPairBuf;
+    cursor.set(start.subarray(0, cap));
+
+    for (let p = 0; p < pairs; p++) {
+      const i = buf[p * 2], j = buf[p * 2 + 1];
+      list[cursor[i]++] = j;
+      list[cursor[j]++] = i;
+    }
+
+    this.adjPairs = pairs;
+    return pairs;
   }
 
   /** Occupancy, for the perf work and for the tests. */

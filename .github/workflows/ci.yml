@@ -42,8 +42,8 @@ jobs:
         # which it only does unprompted from 22.7. test/run.mjs refuses to
         # start below that rather than failing incomprehensibly.
         node: ['22', '24']
-        # ⚠ Longest first, and this now matters. 13 suites x 2 versions is 26
-        # jobs against a 20-job *account* ceiling, so six of them queue behind
+        # ⚠ Longest first, and this now matters. 14 suites x 2 versions is 28
+        # jobs against a 20-job *account* ceiling, so eight of them queue behind
         # the rest rather than all starting at once. Under contention the
         # makespan is minimised by dispatching the long jobs first, and matrix
         # order is what decides dispatch order -- put a two-second suite at the
@@ -54,9 +54,10 @@ jobs:
         # Ordered by measured local runtime, longest first:
         #   clumps-spread 101s   clumps-rate 87s   contact-pairs 47s
         #   clumps-stream 47s    contact-repose 45s   hexfield 14s
-        #   contact-sleep 10s    everything else under a second
+        #   contact-sleep 10s    exchange-producers 9s
+        #   everything else under a second
         suite: [clumps-spread, clumps-rate, contact-pairs, clumps-stream,
-                contact-repose, hexfield, contact-sleep,
+                contact-repose, hexfield, contact-sleep, exchange-producers,
                 pour, modules, sizes, smoke, hash, contact-surface]
     name: ${{ matrix.suite }} (node ${{ matrix.node }})
     steps:
