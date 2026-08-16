@@ -35,7 +35,7 @@ const G = 9.81;
 const R = 0.0005;                 // 1 mm median grain
 const SPACING = 0.003;            // the shipped cell spacing
 const BASE = 0.001;               // broad-phase level 0, the median diameter
-const SLEEP = { sleepSpeed: 0.002, sleepSubsteps: 12 };
+const SLEEP = { sleepSpeed: 0.002, sleepSubsteps: 12, stillFactor: 6 };
 const DEG = Math.PI / 180;
 
 const flatField = () => new HexField(96, 96, SPACING);
@@ -327,10 +327,19 @@ console.log('\nextrema ignore grains still in flight');
 }
 
 if (wants('producers')) {
-console.log('\nthe rest timer keeps counting after a grain retires');
-  // Quiescence is a stricter threshold on this same timer, so a timer that
-  // saturates at `sleepSubsteps` makes every setting above it identical and a
-  // sweep across it measures one point while looking like it measured a range.
+console.log('\nstillness is counted separately from sleeping, and keeps counting');
+  // ⚠ Two counters, and the second one exists because the first cannot do this
+  // job. `restTimer` is the sleep rule's hysteresis and `wake` clears it,
+  // including when the grain was woken by a *neighbour* -- deliberate, since
+  // the wake rule is contagious on purpose. `stillTimer` is the grain's own
+  // stillness and only its own motion clears it.
+  //
+  // An earlier revision tried to make `restTimer` serve both by letting it run
+  // on past `sleepSubsteps`. That is not enough: absorption gated on the sleep
+  // *phase* retired 3 grains out of 3000 under a continuous pour, because
+  // arrivals keep waking the pile -- so the plan's mitigation order, which is
+  // absorption first and sleeping after, could not be reached through a flag
+  // that sleeping owns.
   const field = flatField();
   const P = new Particles(4);
   const solver = new ContactSolver(4);
@@ -346,9 +355,11 @@ console.log('\nthe rest timer keeps counting after a grain retires');
   for (let s = 0; s < 200; s++) solver.step(P, field, 1 / hz, o);
 
   check('  the grain retired', P.phase[i] === PHASE_RESTING);
-  check('  and its timer ran well past the sleep threshold',
-    P.restTimer[i] > SLEEP.sleepSubsteps * 5,
-    `restTimer ${P.restTimer[i]} against sleepSubsteps ${SLEEP.sleepSubsteps}`);
+  check('  and its stillness ran well past the sleep threshold',
+    P.stillTimer[i] > SLEEP.sleepSubsteps * 5,
+    `stillTimer ${P.stillTimer[i]} against sleepSubsteps ${SLEEP.sleepSubsteps}`);
+  check('  while the sleep timer stayed a hysteresis counter',
+    P.restTimer[i] >= SLEEP.sleepSubsteps);
 }
 
 if (wants('producers')) {
@@ -518,6 +529,187 @@ console.log('\na grain in flight is never buried');
   ex.updateExtrema(P, field);
   ex.updateDepth(P, field, hash, { seedWindow, cutoff: 40 * DIAM });
   check('  it reads depth 0, not Infinity', ex.depth[flying] === 0);
+}
+
+// ---------------------------------------------------------------- absorb ----
+
+// A bowl: flat floor inside RB, steep wall outside. Confinement is what makes
+// the pile deepen instead of spreading, and a deep pile is the only place
+// absorption has anything to do. It is also the shape M3 needed to reproduce
+// its terrain-penetration bug at all -- on a flat floor a heap just spreads
+// until the pressure disappears and every pressure-dependent check passes
+// while testing nothing.
+const RB = 0.012;
+function bowlField() {
+  const f = flatField();
+  for (let r = 0; r < f.H; r++) {
+    for (let q = 0; q < f.W; q++) {
+      const d = Math.hypot(f.cellX(q, r), f.cellZ(r));
+      f.height[f.index(q, r)] = d <= RB ? 0 : Math.min(0.05, (d - RB) * 4);
+    }
+  }
+  f.markAllDirty();
+  return f;
+}
+
+// Pour into the bowl with absorption running, sampling the live count as it
+// goes. `activeLayer` is in grain diameters, matching the slider.
+function pour({
+  total = 9000, cap = 3000, hz = 240, seconds = 7, seed = 4,
+  activeLayer = 2, mode = 'and', quiescenceSubsteps = 24, absorb = true,
+} = {}) {
+  const field = bowlField();
+  // Absorption runs under observed elevation: a deposit moves the ledger and
+  // the surface is read off the grains that remain. Leaving it volume-driven
+  // makes absorption raise the terrain twice and bury live grains.
+  field.observedElevation = false;
+  const rng = new Rng(seed);
+  const P = new Particles(cap);
+  const solver = new ContactSolver(cap);
+  const ex = new ExchangeSolver(cap);
+  const o = {
+    gravity: G, friction: 0.6, restitution: 0.1, iterations: 2, baseCell: BASE,
+    ...SLEEP, wakeDepth: 0.2 * G / (hz * hz), stirSpeed: SLEEP.sleepSpeed * 10,
+  };
+  const exOpts = {
+    activeLayerMetres: activeLayer * DIAM,
+    seedWindow: 6 * DIAM,
+    quiescenceMode: mode,
+    quiescenceSubsteps,
+    minContacts: 3,
+    engulfTolerance: 0.05 * DIAM,
+    maxRise: 0.25 * DIAM,
+  };
+  const steps = Math.round(seconds * hz);
+  const perStep = total / (steps * 0.85);
+  let spawned = 0, debt = 0, emitted = 0, blocked = 0;
+  const trace = [];
+  let worstPenetration = 0;
+
+  for (let s = 0; s < steps; s++) {
+    debt += perStep;
+    while (debt >= 1 && spawned < total) {
+      debt -= 1;
+      const i = P.alloc();
+      if (i < 0) { blocked++; break; }
+      const r = R * (0.7 + rng.next() * 0.6);
+      P.radius[i] = r; P.vol[i] = volOf(r);
+      const a = rng.next() * Math.PI * 2, rad = Math.sqrt(rng.next()) * (RB - 0.003);
+      P.px[i] = Math.cos(a) * rad; P.pz[i] = Math.sin(a) * rad;
+      P.py[i] = 0.022 + rng.next() * 0.002;
+      P.vy[i] = -0.2;
+      P.phase[i] = PHASE_AWAKE;
+      emitted += P.vol[i];
+      spawned++;
+    }
+    solver.step(P, field, 1 / hz, o);
+    // Once per "frame" at 60 fps, which is where it runs in the app.
+    if (s % 4 === 3) {
+      const hash = solver.hash;
+      hash.rebuild(P, BASE, (i) => P.phase[i] !== PHASE_BALLISTIC);
+      hash.buildAdjacency(P);
+      if (absorb) ex.absorb(P, field, hash, exOpts);
+      // ⚠ Asserted continuously rather than at the end. The forbidden state is
+      // transient by nature -- the solver pushes a grain back out of the
+      // terrain on the next substep -- so a check that only looks afterwards
+      // reports a clean pile whatever happened during the pour.
+      const w = ex.worstPenetration(P, field);
+      if (w > worstPenetration) worstPenetration = w;
+      trace.push({ s, live: P.count, absorbed: ex.absorbedCount });
+    }
+  }
+  return { field, P, ex, trace, emitted, spawned, blocked, worstPenetration, cap };
+}
+
+if (wants('absorb')) {
+console.log('the live count plateaus, and not at either degenerate end');
+  const run = pour();
+  const half = run.trace.slice(Math.floor(run.trace.length / 2));
+  const counts = half.map((t) => t.live);
+  const mean = counts.reduce((a, b) => a + b, 0) / counts.length;
+  const lo = Math.min(...counts), hi = Math.max(...counts);
+  const last = run.trace[run.trace.length - 1];
+  console.log(`    poured ${run.spawned}, live settled near ${mean.toFixed(0)}` +
+    ` (${lo}-${hi}), absorbed ${last.absorbed}, cap ${run.cap}`);
+
+  // ⚠ Bounded on BOTH sides, which is the recurring defect in this project's
+  // tests. "Plateaus rather than climbing" is satisfied by absorption so
+  // aggressive it retires everything, and by a pour too slow to approach the
+  // cap in the first place -- both are plateaus and neither is the behaviour
+  // being claimed.
+  check('  it is not pinned at the cap', hi < run.cap * 0.95, `reached ${hi} of ${run.cap}`);
+  check('  it did not retire almost everything', mean > run.cap * 0.15,
+    `only ${mean.toFixed(0)} live`);
+  check('  and the pour ran well past the point it levelled off',
+    run.spawned > mean * 2.5, `poured ${run.spawned} against a plateau of ${mean.toFixed(0)}`);
+  check('  absorption is what bounded it', last.absorbed > run.spawned * 0.4,
+    `absorbed only ${last.absorbed} of ${run.spawned}`);
+  check('  the plateau is level, not drifting',
+    (hi - lo) < mean * 0.5, `swing ${lo}-${hi} around ${mean.toFixed(0)}`);
+}
+
+if (wants('absorb')) {
+console.log('\nwithout absorption the same pour fills the store');
+  // The control. Without it the check above cannot tell a working absorption
+  // from a pour that was never going to reach the cap.
+  const run = pour({ absorb: false });
+  check('  the store fills', run.P.count >= run.cap * 0.98,
+    `only ${run.P.count} of ${run.cap}`);
+  check('  and emission was refused slots', run.blocked > 0);
+}
+
+if (wants('absorb')) {
+console.log('\nthe volume audit closes across the exchange');
+  const run = pour({ total: 5000, seconds: 5 });
+  const held = run.P.totalVolume() + run.field.volume;
+  const residual = Math.abs(run.emitted - (held + run.field.escapedVolume));
+  const rel = residual / run.emitted;
+  console.log(`    poured ${(run.emitted * 1e9).toFixed(1)} mm³,` +
+    ` held ${(held * 1e9).toFixed(1)} mm³, residual ${rel.toExponential(2)}`);
+  // ⚠ No packing-fraction term. `solidVolume` is solid grain volume, the same
+  // currency the grains are counted in -- which is the whole point of
+  // decoupling elevation from volume. A real leak here is O(1); 1e-12 is the
+  // float noise of a running total against millions of updates.
+  check('  nothing is minted or lost', rel < 1e-9, `residual ${rel.toExponential(2)}`);
+  check('  the field agrees with its own running total',
+    Math.abs(run.field.sumVolume() - run.field.volume) < 1e-15);
+}
+
+if (wants('absorb')) {
+console.log('\nabsorption never buries a live grain');
+  const run = pour({ total: 7000, seconds: 6 });
+  console.log(`    worst penetration over the pour ${(run.worstPenetration * 1e6).toFixed(1)} µm`);
+  // The bar is the discretisation, not a number that happens to pass: a grain
+  // is driven g*dt² into whatever it rests on each substep, and the solver
+  // removes that on the next one.
+  const gdt2 = G / (240 * 240);
+  check('  no grain ends up materially below the surface',
+    run.worstPenetration < 4 * gdt2,
+    `${(run.worstPenetration * 1e6).toFixed(1)} µm against 4*g*dt² = ${(4 * gdt2 * 1e6).toFixed(1)} µm`);
+}
+
+if (wants('absorb')) {
+console.log('\nthe observed surface is measured against what one packing fraction predicts');
+  const run = pour({ total: 6000, seconds: 6 });
+  const div = run.ex.elevationDivergence(run.field);
+  console.log(`    observed phi ${div.phi.toFixed(3)} over ${div.cells} cells,` +
+    ` elevation drift mean ${(div.mean * 1e6).toFixed(0)} µm, worst ${(div.worst * 1e6).toFixed(0)} µm`);
+  // φ is a readout, so this asserts it is physically possible rather than
+  // equal to the bootstrap. Random loose packing of spheres is about 0.55 and
+  // the densest ordered packing is 0.74; anything outside says the surface and
+  // the volume ledger have come apart.
+  check('  the measured packing fraction is a packing fraction',
+    div.phi > 0.3 && div.phi < 0.78, `phi ${div.phi.toFixed(3)}`);
+  check('  there were cells to measure it over', div.cells > 50, `${div.cells} cells`);
+}
+
+if (wants('absorb')) {
+console.log('\nthe ∞ detent absorbs nothing at all');
+  const run = pour({ total: 4000, seconds: 4, activeLayer: Infinity });
+  check('  nothing was absorbed', run.ex.absorbedCount === 0, `${run.ex.absorbedCount} absorbed`);
+  check('  the field stayed empty', run.field.volume === 0);
+  check('  and the store filled instead', run.P.count >= run.cap * 0.98,
+    `only ${run.P.count} of ${run.cap}`);
 }
 
 // ⚠ A part that runs no checks must be red, not green. This suite is built a

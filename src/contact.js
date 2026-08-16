@@ -295,6 +295,10 @@ export class ContactSolver {
     const surf = this._surf;
     const n = P.count;
     const bounceFloor = BOUNCE_FLOOR * g * dt;
+    // How far a grain may wander and still count as standing still, as a
+    // multiple of the per-substep gravity sag. See the retire loop.
+    const stillRadius = (o.stillFactor ?? 2) * g * dt * dt;
+    const stillRadius2 = stillRadius * stillRadius;
     let contacts = 0;
 
     // --- Predict. Save where each grain started; the friction law reads it.
@@ -470,19 +474,43 @@ export class ContactSolver {
     let asleep = 0;
     for (let k = 0; k < n; k++) {
       const i = live[k];
-      // ⚠ The timer keeps running after the grain retires, and that is not
-      // bookkeeping for its own sake. M4's absorption needs *how long* a grain
-      // has been still, not merely that it passed the sleep test: quiescence
-      // is a stricter threshold layered on this same timer, and the plan says
-      // so. Stopping the count here froze it at `sleepSubsteps` for every
-      // sleeper, so any `quiescenceSubsteps` above that was unreachable and a
-      // sweep across it would have measured one point while appearing to
-      // measure a range -- the vacuous-test pattern, arriving early enough to
-      // catch. Float32 counts integers exactly to 2^24, which is nineteen
-      // hours of substeps, and saturates rather than wrapping past it.
-      if (phase[i] === PHASE_RESTING) { asleep++; P.restTimer[i]++; continue; }
+      // A sleeper is motionless by construction, so its own stillness keeps
+      // accruing even though the sleep rule has nothing left to decide.
+      if (phase[i] === PHASE_RESTING) { asleep++; P.stillTimer[i]++; continue; }
       if (phase[i] !== PHASE_AWAKE) continue;
       const speed2 = vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i];
+
+      // ⚠ Stillness is a question about *displacement*, and speed cannot
+      // answer it. At 240 Hz the median grain in a poured pile moves at
+      // 4.0 mm/s against a 2 mm/s sleep threshold, so a speed test calls the
+      // whole pile awake -- and that speed is not creep. Measured over 24
+      // substeps the median grain actually goes 249 µm, against 401 µm if it
+      // were travelling, and against `g·dt²` of 170 µm. The residual motion is
+      // the discretisation failing to converge, not the pile moving.
+      //
+      // So the bar is `g·dt²`: how far gravity drives a grain into its
+      // neighbour in one substep, which is precisely the error the solver is
+      // failing to remove. A grain counts as still while it stays inside that
+      // radius of where the count began, and the anchor moves only when it
+      // leaves -- so a long count means bounded total drift rather than a
+      // bounded rate, which is the guarantee absorption actually wants.
+      //
+      // Bounding it this way rather than by a speed in m/s is what makes it
+      // survive the substep-rate decision this milestone still owes: raise the
+      // rate and `g·dt²` falls as 1/hz², the pile converges, and the threshold
+      // tightens with it instead of having to be retuned.
+      const dxa = px[i] - P.ax[i], dya = py[i] - P.ay[i], dza = pz[i] - P.az[i];
+      if (supported[i] && dxa * dxa + dya * dya + dza * dza < stillRadius2) {
+        P.stillTimer[i]++;
+      } else {
+        P.stillTimer[i] = 0;
+        P.ax[i] = px[i]; P.ay[i] = py[i]; P.az[i] = pz[i];
+      }
+
+      // `restTimer` is the sleep rule's own hysteresis and `wake` clears it,
+      // including when the grain was woken by a neighbour rather than by
+      // moving itself. Kept on speed, because sleeping is about whether the
+      // solver can skip the grain this substep.
       if (supported[i] && speed2 < o.sleepSpeed * o.sleepSpeed) {
         if (++P.restTimer[i] >= o.sleepSubsteps) {
           phase[i] = PHASE_RESTING;

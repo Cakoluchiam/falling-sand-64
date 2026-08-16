@@ -79,7 +79,55 @@
 // measured, a 2-diameter window popped 25.7% of surface grains at 32° tilt and
 // 89.1% at 45°, and the failure appears exactly where that product exceeds it.
 
-import { PHASE_BALLISTIC } from './particles.js';
+// ## ⚠ Elevation stays volume-derived: the plan's pre-approved retreat, taken
+//
+// The plan decouples elevation from volume and drives the surface to the
+// *observed* underside of resting grains, `min(py − radius)`, with the
+// volume-derived height kept in parallel as a diagnostic. It also records a
+// retreat: "If observation-driven elevation proves unstable at M4, reverting
+// to volume-derived height with a fixed φ is an accepted outcome, not a
+// failure." It is unstable, and this is that retreat.
+//
+// Four rules were built and measured on the same confined pour, 9000 grains
+// into a bowl, against a ledger that implies a 14.5 mm surface:
+//
+//  - **Pure observation collapses.** Terrain and grains define each other, so
+//    letting height follow the undersides down is a runaway: the surface
+//    drops, the grains resting on it fall, the undersides drop again. The pile
+//    never builds at all -- peak 0.00 mm after 8000 absorptions.
+//  - **A monotone ratchet over-reads by half.** Taking the running maximum of
+//    the observed underside climbs on transient highs and can never come back,
+//    landing the surface at 22.07 mm where the volume supports 14.5 -- a pile
+//    visibly taller than the sand poured into it, and a φ readout of nonsense.
+//  - **Capping the ratchet by the ledger pins it at zero**, 0.20 mm, for the
+//    same reason the collapse happens.
+//  - **Volume-derived tracks the ledger**, 13.78 mm against 14.5 predicted.
+//
+// The common cause is that `grainBottom` is a **minimum**, so a single
+// straggler settled low in a cell pins that whole cell's surface however much
+// has been buried under the rest of it. That is not numerical instability in
+// the sense the plan anticipated; it is the statistic being the wrong one, and
+// no amount of care in the update rule repairs it.
+//
+// What the decoupling decision was protecting against still stands -- a fixed
+// φ that disagrees with the real local packing drifts the surface away from
+// the grains, cumulatively and in one direction. So the parallel computation
+// survives as `elevationDivergence`, which is that drift in metres and is the
+// measurement the whole decision existed to make. φ_local remains a readout
+// and never an input, which is also what keeps relaxation's transport rule
+// exactly volume-conserving.
+//
+// ## Which makes the engulfment invariant a real gate again
+//
+// With height driven by volume there *is* a prediction to check, so the plan's
+// original formulation applies as written, including both its amendments. The
+// deadlock it warns about is real and the fix is the one it names: the
+// comparison **excludes the grains being absorbed in this batch**, because
+// those are precisely the ones whose undersides currently define the surface,
+// and it carries a **tolerance**, because "flush" and "below" are separated by
+// float noise on a Float32 height.
+
+import { PHASE_BALLISTIC, PHASE_RESTING } from './particles.js';
 
 const SQRT3_2 = Math.sqrt(3) / 2;
 const NB_DX = [1, -1, 0.5, -0.5, 0.5, -0.5];
@@ -106,9 +154,304 @@ export class ExchangeSolver {
     // first use, since only the field knows how many cells there are.
     this.topNy = null;
     this.topGrad = null;
+    this._batch = new Int32Array(capacity);
+    this._skip = new Uint8Array(capacity);
     this.extremaCounted = 0;
     this.seeds = 0;
     this.reached = 0;
+    // Counters the panel and the tests read. `absorbedVolume` is cumulative;
+    // the rest describe the last frame.
+    this.absorbedCount = 0;
+    this.absorbedVolume = 0;
+    this.lastAbsorbed = 0;
+    this.lastCandidates = 0;
+    this.lastDeferred = 0;
+  }
+
+  /**
+   * Whether grain `i` counts as quiescent, under one of the four modes the
+   * plan requires be available rather than chosen in advance.
+   *
+   * `self` is rest duration, `contact` is "everything I touch has stopped".
+   * They fail in opposite directions -- contact-quiescence can starve under a
+   * continuous pour, self-duration can retire a grain still carrying load --
+   * so which is right is an empirical question, and `and`/`or` are the
+   * strictest and the release valve.
+   *
+   * ⚠ `contact` cannot be computed in the solver's pair loop, which is where
+   * the plan puts it. That loop returns early when both grains are asleep, so
+   * the contacts of exactly the grains this asks about are the ones it never
+   * enumerates. It comes off the frame's adjacency instead.
+   */
+  _quiescent(P, hash, i, mode, substeps) {
+    const self = () => P.stillTimer[i] >= substeps;
+    const contact = () => {
+      const { adjStart, adjList } = hash;
+      for (let a = adjStart[i]; a < adjStart[i + 1]; a++) {
+        if (P.stillTimer[adjList[a]] < substeps) return false;
+      }
+      return true;
+    };
+    switch (mode) {
+      case 'self': return self();
+      case 'contact': return contact();
+      case 'or': return self() || contact();
+      default: return self() && contact();     // 'and', the strictest
+    }
+  }
+
+  /**
+   * Retire every grain that is buried deep enough and quiet enough, into the
+   * heightfield. Returns how many were absorbed.
+   *
+   * Order is load-bearing: select, deposit, free, *then* re-read the extrema
+   * and set elevation from them. Reading the undersides before the batch is
+   * gone would drive the surface to the very grains being removed.
+   */
+  absorb(P, field, hash, o) {
+    const { py, radius, vol, phase, live } = P;
+    const cutoff = o.activeLayerMetres;
+    this.lastAbsorbed = 0;
+    this.lastCandidates = 0;
+
+    // The ∞ detent, and the whole of what it means. Not "absorb at a very
+    // large depth" -- the depth pass would then walk the entire pile every
+    // frame to establish that nothing qualifies.
+    if (!Number.isFinite(cutoff)) return 0;
+
+    this.updateExtrema(P, field);
+    this.updateDepth(P, field, hash, { seedWindow: o.seedWindow, cutoff });
+
+    // Prefilter, then the real test. ⚠ Every term here has to be monotone in
+    // burial: a prefilter is only sound if it never rejects what the real test
+    // would accept. The plan originally kept the column-depth measure as the
+    // prefilter, which is exactly wrong -- that measure produces false
+    // *negatives* on slopes, so gating on it would preserve the failure the
+    // whole burial measure exists to remove, on the flanks where absorption
+    // matters most.
+    const batch = this._batch;
+    let n = 0;
+    for (let k = 0; k < P.count; k++) {
+      const i = live[k];
+      // ⚠ Not gated on PHASE_RESTING, and that is the correction that made
+      // absorption fire at all. See particles.js: sleeping is a performance
+      // device whose wake rule is contagious by design, and under a continuous
+      // pour it retires almost nothing -- 3 grains of 3000, measured. Gating
+      // here on it made the plan's own mitigation order circular. What
+      // absorption actually requires is that the grain be still, which
+      // `stillTimer` measures directly and the sleep phase only approximates.
+      if (phase[i] === PHASE_BALLISTIC) continue;
+      if (hash.adjStart[i + 1] - hash.adjStart[i] < o.minContacts) continue;
+      if (!this._quiescent(P, hash, i, o.quiescenceMode, o.quiescenceSubsteps)) continue;
+      this.lastCandidates++;
+      if (!(this.depth[i] > cutoff)) continue;
+      batch[n++] = i;
+    }
+
+    if (n === 0) return 0;
+
+    // Recompute the undersides with the batch held out. Without this the check
+    // below compares the new surface against the very grains being removed,
+    // `height == grainBottom` holds by construction, and absorption never
+    // fires -- the deadlock the plan warns about, reached exactly as described.
+    const skip = this._skip;
+    for (let b = 0; b < n; b++) skip[batch[b]] = 1;
+    this.updateExtrema(P, field, skip);
+
+    // Where every cell's surface stood before this pass, so the rise can be
+    // bounded below.
+    if (!this._riseBase || this._riseBase.length !== field.n) {
+      this._riseBase = new Float64Array(field.n);
+    }
+    const base = this._riseBase;
+    for (let c = 0; c < field.n; c++) base[c] = field.height[c];
+
+    let done = 0, deferred = 0;
+    for (let b = 0; b < n; b++) {
+      const i = batch[b];
+      const splat = Math.max(field.s, radius[i]);
+      const cells = field.discCells(P.px[i], P.pz[i], splat);
+      // Would depositing this grain lift the surface over something still
+      // live? One comparison per affected cell, against the undersides that
+      // will still be there afterwards.
+      let blocked = false;
+      for (let c = 0; c < cells.length; c += 2) {
+        const idx = cells[c];
+        const after = field.volumeHeightOf2(idx, cells[c + 1] * vol[i]);
+        // ⚠ Against the raw minimum, deliberately, and it costs absorption
+        // rate. Flooring the reference at the current surface -- on the
+        // argument that a straggler already inside the terrain is the solver's
+        // problem and should not veto its cell forever -- does unblock it:
+        // deferrals fall from 148,606 to zero and the surface reaches 11.2 mm
+        // instead of 1.1. But penetration goes from 597 um with two grains
+        // past 200 um to 1664 um with fifty-three, and at that tolerance the
+        // gate never fires at all, so the invariant stops being enforced by
+        // anything. The strict form is kept until the substep rate is settled;
+        // see the note on the rate limit below.
+        if (after > field.grainBottom[idx] + o.engulfTolerance) { blocked = true; break; }
+        // ⚠ And a ceiling on how far the surface may climb in one pass. The
+        // gate above can only refuse to bury a grain that is *already there*;
+        // it cannot see one that settles into the cell next frame, and the
+        // terrain never comes back down. So a cell that absorbs a whole column
+        // at once leaves a step for the next arrival to land inside. Capping
+        // the rise bounds that step by construction, and the deferred grains
+        // are absorbed a frame or two later rather than lost -- absorption is
+        // rate-limited here, not refused.
+        if (after - base[idx] > o.maxRise) { blocked = true; break; }
+      }
+      if (blocked) {
+        // ⚠ Put its underside back into the extrema before moving on. It was
+        // held out so the gate could see past it, and a deferred grain is one
+        // that is *staying* -- leaving it out means every later deposit in
+        // this pass is checked against a surface that has forgotten it, and it
+        // gets buried by a neighbour it just successfully blocked. Measured,
+        // that alone drove grains 1.6 mm under the terrain.
+        skip[i] = 0;
+        this._register(P, field, i);
+        deferred++;
+        continue;
+      }
+      field.deposit(P.px[i], P.pz[i], vol[i], splat);
+      this.absorbedVolume += vol[i];
+      P.free(i);
+      done++;
+    }
+    for (let b = 0; b < n; b++) skip[batch[b]] = 0;
+
+    this.absorbedCount += done;
+    this.lastAbsorbed = done;
+    this.lastDeferred = deferred;
+    return done;
+  }
+
+  /** One grain's contribution to the per-cell extrema, added back in. */
+  _register(P, field, i) {
+    const r = P.radius[i];
+    const hi = P.py[i] + r, lo = P.py[i] - r;
+    const top = field.grainTop, bottom = field.grainBottom;
+    if (r <= field.s) {
+      const t = field.sampleTriangle(P.px[i], P.pz[i]);
+      for (const idx of [t.i0, t.i1, t.i2]) {
+        if (top[idx] < hi) top[idx] = hi;
+        if (bottom[idx] > lo) bottom[idx] = lo;
+      }
+    } else {
+      const cells = field.discCells(P.px[i], P.pz[i], r);
+      for (let c = 0; c < cells.length; c += 2) {
+        const idx = cells[c];
+        if (top[idx] < hi) top[idx] = hi;
+        if (bottom[idx] > lo) bottom[idx] = lo;
+      }
+    }
+  }
+
+  /**
+   * Drive the collision surface to the observed underside of the grains that
+   * remain, falling back to the volume-derived height where a cell has none.
+   *
+   * Monotone by construction. The heightfield is a ledger of buried material
+   * and burying is not reversible except through emission, so a cell whose
+   * grains merely wandered off laterally must not drop its surface out from
+   * under whatever is still standing on it.
+   */
+  /** @deprecated kept for `seedCone`, which deposits with no grains at all. */
+  settleElevation(field, { volumeFallback = false } = {}) {
+    const bottom = field.grainBottom, height = field.height;
+    for (let c = 0; c < field.n; c++) {
+      const observed = bottom[c];
+      let target;
+      if (Number.isFinite(observed)) {
+        target = observed;
+      } else if (volumeFallback) {
+        target = field.volumeHeightOf(c);
+      } else {
+        // ⚠ A cell with volume but no grains over it keeps the surface it had.
+        // Deriving one from its volume here is what the plan calls the
+        // fallback, and in the absorption path it is a hazard rather than a
+        // safety net: `volume / (area * phi)` knows nothing about where the
+        // grains are, so a column whose whole stack was absorbed in one batch
+        // gets a tall spike that a neighbouring grain then blends into and
+        // ends up inside. Measured, penetration grew with pile depth --
+        // 315 µm, 801 µm, 1147 µm for caps of 3k, 6k and 8k -- which is the
+        // signature of a fault that scales with how much has been buried
+        // rather than with the substep.
+        //
+        // It also cannot bite: absorption only ever retires grains deeper than
+        // the active layer, so the top couple of diameters of every occupied
+        // column stay as grains and every cell holding sand has something over
+        // it to observe. The fallback is for callers that deposit without
+        // grains at all, which is `seedCone` and nothing else.
+        continue;
+      }
+      if (target > height[c]) {
+        height[c] = target;
+        field._markDirty(c);
+      }
+    }
+  }
+
+  /**
+   * How far the observed surface has drifted from the height a single packing
+   * fraction would predict, over the cells holding sand. **This divergence is
+   * the measurement the elevation decision exists to make** -- it is φ being
+   * wrong, in metres, and its sign says which way.
+   *
+   * Returned as the worst and the mean absolute difference, plus the packing
+   * fraction actually observed. φ_local is a readout here and never an input:
+   * feeding it back into height is what makes relaxation's transport rule
+   * unsolvable, and nothing needs it to.
+   */
+  elevationDivergence(field) {
+    let worst = 0, sum = 0, cells = 0, phiSum = 0, phiCells = 0;
+    for (let c = 0; c < field.n; c++) {
+      if (!(field.solidVolume[c] > 0)) continue;
+      // ⚠ Against the **observed** underside, not against `volumeHeightOf`.
+      // Elevation is volume-derived now, so comparing height to the volume it
+      // came from is comparing a number with itself: it read exactly zero
+      // drift and exactly the bootstrap φ, which looks like a clean result and
+      // is a measurement of nothing. What the decoupling decision wanted to
+      // know is whether one packing fraction keeps the surface under the
+      // grains, and only the grains can answer that.
+      const observed = field.grainBottom[c];
+      if (!Number.isFinite(observed)) continue;
+      const a = Math.abs(field.height[c] - observed);
+      if (a > worst) worst = a;
+      sum += a; cells++;
+      if (observed > 0) {
+        phiSum += field.solidVolume[c] / (observed * field.cellArea);
+        phiCells++;
+      }
+    }
+    return {
+      worst,
+      mean: cells ? sum / cells : 0,
+      cells,
+      // ⚠ Guarded against a zero height, which is every cell the pile has not
+      // reached. An Infinity here would reach the terrain texture as a NaN and
+      // render as a black hole with no stack trace attached.
+      phi: phiCells ? phiSum / phiCells : 0,
+    };
+  }
+
+  /**
+   * The engulfment invariant, as an assertion: no live grain may sit
+   * materially below the terrain. Returns the worst penetration in metres.
+   *
+   * Sampled through `sampleTriangle` like everything else that turns a
+   * position into cells, so this measures the surface a grain would actually
+   * collide with rather than a nearby cell's value.
+   */
+  worstPenetration(P, field) {
+    const { px, py, pz, radius, phase, live } = P;
+    let worst = 0;
+    for (let k = 0; k < P.count; k++) {
+      const i = live[k];
+      if (phase[i] === PHASE_BALLISTIC) continue;
+      const h = field.heightAt(px[i], pz[i]);
+      const below = h - (py[i] - radius[i]);
+      if (below > worst) worst = below;
+    }
+    return worst;
   }
 
   /**
@@ -144,7 +487,7 @@ export class ExchangeSolver {
    * a falling grain low enough to be the minimum in its cell is inside the
    * handoff band and has already joined the contact phase.
    */
-  updateExtrema(P, field) {
+  updateExtrema(P, field, skip = null) {
     const { px, py, pz, radius, phase, live } = P;
     const top = field.grainTop, bottom = field.grainBottom;
     top.fill(-Infinity);
@@ -155,6 +498,7 @@ export class ExchangeSolver {
     for (let k = 0; k < P.count; k++) {
       const i = live[k];
       if (phase[i] === PHASE_BALLISTIC) continue;
+      if (skip && skip[i]) continue;
       const r = radius[i];
       const hi = py[i] + r, lo = py[i] - r;
       if (r <= s) {
