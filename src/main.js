@@ -117,7 +117,7 @@ class App {
       sleepSpeed: CONFIG.sleepSpeed,
       sleepSubsteps: CONFIG.sleepSubsteps,
       stirSpeed: CONFIG.sleepSpeed * CONFIG.stirFactor,
-      stillFactor: CONFIG.stillFactor,
+      stillFraction: CONFIG.stillFraction,
       // Scaled to the substep, because the overlap a settled contact carries
       // is g*dt^2 and the wake threshold has to sit above it.
       wakeDepth: CONFIG.wakeDepthFactor * values.gravity * h * h,
@@ -266,7 +266,7 @@ class App {
       activeLayerMetres: derived.activeLayerMetres(),
       seedWindow: CONFIG.absorbSeedWindow * values.medianDiameter,
       quiescenceMode: CONFIG.quiescenceMode,
-      quiescenceSubsteps: CONFIG.quiescenceSubsteps,
+      quiescenceSubsteps: Math.ceil(CONFIG.quiescenceSeconds * CONFIG.substepHz),
       minContacts: CONFIG.minAbsorbContacts,
       // Float32 height against a surface that is meant to sit flush with the
       // grains on it: "level with" and "above" are a rounding apart.

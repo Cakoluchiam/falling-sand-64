@@ -42,8 +42,8 @@ jobs:
         # which it only does unprompted from 22.7. test/run.mjs refuses to
         # start below that rather than failing incomprehensibly.
         node: ['22', '24']
-        # ⚠ Longest first, and this now matters. 15 suites x 2 versions is 30
-        # jobs against a 20-job *account* ceiling, so ten of them queue behind
+        # ⚠ Longest first, and this now matters. 16 suites x 2 versions is 32
+        # jobs against a 20-job *account* ceiling, so twelve queue behind
         # the rest rather than all starting at once. Under contention the
         # makespan is minimised by dispatching the long jobs first, and matrix
         # order is what decides dispatch order -- put a two-second suite at the
@@ -52,14 +52,19 @@ jobs:
         # tightens this without anything here changing.
         #
         # Ordered by measured local runtime, longest first:
-        #   clumps-spread 101s   clumps-rate 87s   contact-pairs 47s
-        #   clumps-stream 47s    contact-repose 45s   exchange-producers 15s
-        #   hexfield 14s   contact-sleep 10s
+        #   exchange-absorb 214s   clumps-spread 101s   clumps-rate 87s
+        #   contact-pairs 47s   clumps-stream 47s   contact-repose 45s
+        #   exchange-producers 15s   hexfield 14s   contact-sleep 10s
         #   everything else under a second
-        suite: [clumps-spread, clumps-rate, contact-pairs, clumps-stream,
-                contact-repose, exchange-producers, hexfield, contact-sleep,
-                pour, modules, sizes, smoke, hash, contact-surface,
-                exchange-burial]
+        #
+        # `exchange-absorb` now sets the makespan on its own: it pours nine
+        # thousand grains twice, with and without absorption, because the
+        # comparison is the check. Splitting it further would mean pouring
+        # twice as often rather than half as long.
+        suite: [exchange-absorb, clumps-spread, clumps-rate, contact-pairs,
+                clumps-stream, contact-repose, exchange-producers, hexfield,
+                contact-sleep, pour, modules, sizes, smoke, hash,
+                contact-surface, exchange-burial]
     name: ${{ matrix.suite }} (node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v4

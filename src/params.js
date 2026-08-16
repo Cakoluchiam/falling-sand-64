@@ -37,26 +37,25 @@ export const CONFIG = {
 
   grainCapacity: 200000,
 
-  // ⚠ 960, not 240, and the exchange is what settled it rather than contact
-  // accuracy. The plan defers this decision until absorption bounds the
-  // population, on the grounds that quadrupling the rate quadruples a cost
-  // already over budget. Measured, that ordering does not work: at 240 Hz the
-  // absorption gate defers 63,495 times in a five-second pour and leaves the
-  // buried surface lumpy -- peak 5.7 mm against a 3.9 mm mean -- while at
-  // 960 Hz it defers 10,144 times and the surface is flat, 3.4 against 3.5.
-  // Worst penetration over the same pour goes 1225 um to 203 um, and the count
-  // of grains more than 200 um inside the terrain goes 3 to 1.
+  // ⚠ 240, and M4 measured the case for raising it and then measured it away.
+  // The plan defers this decision until absorption bounds the population; the
+  // reordering was right, and the first answer it gave was wrong.
   //
-  // The governing ratio is `g*dt^2` against a grain radius: 170 um against
-  // 500 at 240 Hz, and 10.6 um at 960. The cost is 3.4x per simulated second
-  // at a fixed population -- but absorption removes an order of magnitude of
-  // that population, which is why the two had to be decided together and why
-  // the plan is right that neither can be settled alone.
-  substepHz: 960,
-  // Four times what it was, so a 1/60 s frame can still run its 16 substeps.
-  // The wall-clock budget below is what actually sheds work under load; this
-  // is only the ceiling that stops a backlog spiralling.
-  maxSubstepsPerFrame: 32,
+  // A bowl fixture said 960 Hz decisively -- penetration 1225 um to 203, a
+  // lumpy buried surface to a flat one. That fixture held the population fixed
+  // and so hid a confound in the stillness test, which was then scaled by
+  // `g*dt^2` and therefore tightened as 1/hz^2 while the pile's actual motion
+  // did not. Raising the rate was mostly switching absorption off.
+  //
+  // With stillness made rate-independent, the same twenty-second pour at
+  // matched *simulated* time says the opposite: at t=4 s, 240 Hz has absorbed
+  // 6,229 grains against 480 Hz's 5,284, with penetration 297 um against 303,
+  // for half the cost per frame -- 237 ms against 474. The exchange does not
+  // need the rate, and the `g*dt^2 << r` criterion the plan states is about
+  // contact accuracy -- stack compression and tunnelling -- which remains true
+  // and remains a separate decision with its own budget.
+  substepHz: 240,
+  maxSubstepsPerFrame: 8,
   frameBudgetMs: 12,
 
   // Ballistic integration is per frame, but the simulation-speed slider can
@@ -118,21 +117,27 @@ export const CONFIG = {
   // rather than assumed the setting does not otherwise change the answer:
   // four, six and eight give identical results.
   absorbSeedWindow: 6,
-  // Substeps of stillness before a grain counts as quiescent, on top of the
-  // `sleepSubsteps` it already took to fall asleep. ⚠ This only became a real
-  // knob when the rest timer stopped saturating -- see contact.js.
-  quiescenceSubsteps: 24,
-  // How far a grain may drift and still count as standing still, as a multiple
-  // of `g*dt^2`. Bounded by the discretisation rather than by a speed, because
-  // the residual motion in a pile at 240 Hz *is* the discretisation: measured,
-  // the median grain travels 249 um over 24 substeps against a g*dt^2 of 170.
-  // Raise the substep rate and this tightens on its own.
-  stillFactor: 6,
+  // ⚠ How long a grain must hold still before absorption will take it, in
+  // **seconds** rather than substeps. Counting substeps makes the requirement
+  // four times stricter at 960 Hz than at 240 for no physical reason, which is
+  // half of what made the rate comparison read backwards.
+  quiescenceSeconds: 0.1,
+  // How far a grain may drift over that time and still count as standing
+  // still, as a fraction of its own radius. ⚠ Not a multiple of `g*dt^2`: see
+  // the note in contact.js for why that scaling switched the exchange off as
+  // the substep rate rose.
+  stillFraction: 0.5,
   // 'and' | 'or' | 'self' | 'contact'. Which stillness test absorption uses.
-  // Deliberately not settled in advance: the two fail in opposite directions
-  // and the plan defers the choice to a measurement. See the sweep in
-  // test/exchange.mjs.
-  quiescenceMode: 'and',
+  // ⚠ Settled by measurement, which is open concern 2 in PLAN.md discharged.
+  // The plan predicts contact-quiescence may starve under a continuous pour,
+  // and it does -- and `and` inherits that, because requiring every neighbour
+  // to be still is a condition a pour rarely leaves standing. Over a
+  // twenty-second pour onto a flat floor: `self` at a 0.5-radius stillness bar
+  // absorbed 16,629 grains, `contact` at twice that looseness 8,288, and `and`
+  // 4,696. `self` alone is not the risk the plan feared either -- the buried
+  // flank angle moves 0.7 degrees between a 0.5r bar and a 1.0r bar, so
+  // absorption is not freezing material mid-slide.
+  quiescenceMode: 'self',
   // Contact-count floor for the absorption prefilter. Monotone in burial, as
   // a prefilter must be: a grain with two contacts is on a surface whatever
   // else is true of it.

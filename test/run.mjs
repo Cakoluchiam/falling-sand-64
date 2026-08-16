@@ -48,6 +48,7 @@ const SUITES = [
   // job that passes while testing nothing.
   ['exchange-producers', 'exchange.mjs', 'per-frame passes: grain extrema, contact adjacency, rest timers', 'producers'],
   ['exchange-burial', 'exchange.mjs', 'how deep a grain is, measured through the pile rather than down a column', 'burial'],
+  ['exchange-absorb', 'exchange.mjs', 'retiring buried grains, the volume audit, and the engulfment invariant', 'absorb'],
   // `clumps` is minutes where the rest are seconds, so it is split into three
   // parts that CI runs as separate jobs. A fourth element is the argument
   // handed to the script; everything else runs whole. The parts share one file

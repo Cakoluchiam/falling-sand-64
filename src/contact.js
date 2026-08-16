@@ -296,9 +296,8 @@ export class ContactSolver {
     const n = P.count;
     const bounceFloor = BOUNCE_FLOOR * g * dt;
     // How far a grain may wander and still count as standing still, as a
-    // multiple of the per-substep gravity sag. See the retire loop.
-    const stillRadius = (o.stillFactor ?? 2) * g * dt * dt;
-    const stillRadius2 = stillRadius * stillRadius;
+    // fraction of its own radius. See the retire loop.
+    const stillFraction = o.stillFraction ?? 0.25;
     let contacts = 0;
 
     // --- Predict. Save where each grain started; the friction law reads it.
@@ -485,22 +484,28 @@ export class ContactSolver {
       // 4.0 mm/s against a 2 mm/s sleep threshold, so a speed test calls the
       // whole pile awake -- and that speed is not creep. Measured over 24
       // substeps the median grain actually goes 249 µm, against 401 µm if it
-      // were travelling, and against `g·dt²` of 170 µm. The residual motion is
-      // the discretisation failing to converge, not the pile moving.
-      //
-      // So the bar is `g·dt²`: how far gravity drives a grain into its
-      // neighbour in one substep, which is precisely the error the solver is
-      // failing to remove. A grain counts as still while it stays inside that
+      // were travelling. A grain counts as still while it stays inside a fixed
       // radius of where the count began, and the anchor moves only when it
-      // leaves -- so a long count means bounded total drift rather than a
+      // leaves -- so a long count means bounded total *drift* rather than a
       // bounded rate, which is the guarantee absorption actually wants.
       //
-      // Bounding it this way rather than by a speed in m/s is what makes it
-      // survive the substep-rate decision this milestone still owes: raise the
-      // rate and `g·dt²` falls as 1/hz², the pile converges, and the threshold
-      // tightens with it instead of having to be retuned.
+      // ⚠ The radius is a fraction of the grain, **not** a multiple of `g·dt²`,
+      // and the difference is not cosmetic. Scaling it by the discretisation
+      // looks principled -- the residual motion in a pile really is the solver
+      // failing to converge -- but it makes the bar fall as 1/hz² while the
+      // real motion does not, so raising the substep rate tightens the test far
+      // faster than it settles the pile. Measured on the same twenty-second
+      // pour, that took absorption from 9,665 grains at 240 Hz to 236 at 960,
+      // and candidates from 447 to 8: quadrupling the rate all but switched
+      // the exchange off, and it read as the higher rate being worse.
+      //
+      // A fraction of a radius is scale-free in the way that matters -- it
+      // asks whether the grain has moved *appreciably*, which is a question
+      // about sand and not about the timestep -- and it leaves the rate free to
+      // be chosen on its own merits.
+      const still2 = (stillFraction * radius[i]) ** 2;
       const dxa = px[i] - P.ax[i], dya = py[i] - P.ay[i], dza = pz[i] - P.az[i];
-      if (supported[i] && dxa * dxa + dya * dya + dza * dza < stillRadius2) {
+      if (supported[i] && dxa * dxa + dya * dya + dza * dza < still2) {
         P.stillTimer[i]++;
       } else {
         P.stillTimer[i] = 0;
