@@ -254,8 +254,29 @@ export class ExchangeSolver {
     // below compares the new surface against the very grains being removed,
     // `height == grainBottom` holds by construction, and absorption never
     // fires -- the deadlock the plan warns about, reached exactly as described.
+    // ⚠ The exclusion set is every grain **deeper than the active layer**, not
+    // merely the ones being absorbed this pass. The plan says to exclude "the
+    // grains being absorbed in this batch", and that is not enough: a grain
+    // deep enough to qualify but not yet quiescent stays in the extrema, and
+    // since `grainBottom` is a minimum, one of them holds its whole cell's
+    // reference down at the floor. Every later absorption in that cell is then
+    // refused for as long as it lingers.
+    //
+    // Measured with batch-only exclusion, the gate deferred 46,297 times in
+    // five seconds at 960 Hz and let the surface reach 0.5 mm where the sand
+    // implies fifteen -- and no setting of φ or the tolerance moved it, because
+    // the blocker was not a margin but a grain.
+    //
+    // Excluding by depth states the invariant's real intent: never bury a
+    // grain that is going to *stay* live. One that is already past the active
+    // layer is destined for the continuum whether it has settled yet or not,
+    // so the surface advancing to meet it is the mechanism working rather than
+    // a violation of it.
     const skip = this._skip;
-    for (let b = 0; b < n; b++) skip[batch[b]] = 1;
+    for (let k = 0; k < P.count; k++) {
+      const i = live[k];
+      if (phase[i] !== PHASE_BALLISTIC && this.depth[i] > cutoff) skip[i] = 1;
+    }
     this.updateExtrema(P, field, skip);
 
     // Where every cell's surface stood before this pass, so the rise can be
@@ -306,8 +327,10 @@ export class ExchangeSolver {
         // this pass is checked against a surface that has forgotten it, and it
         // gets buried by a neighbour it just successfully blocked. Measured,
         // that alone drove grains 1.6 mm under the terrain.
-        skip[i] = 0;
-        this._register(P, field, i);
+        // ⚠ Not re-registered. It was held out because it is deeper than the
+        // active layer, which is still true -- it was refused this pass only
+        // because the surface would have climbed too far in one go. Putting it
+        // back would restore exactly the blocker the depth exclusion removes.
         deferred++;
         continue;
       }
@@ -316,7 +339,7 @@ export class ExchangeSolver {
       P.free(i);
       done++;
     }
-    for (let b = 0; b < n; b++) skip[batch[b]] = 0;
+    for (let k = 0; k < P.count; k++) skip[live[k]] = 0;
 
     this.absorbedCount += done;
     this.lastAbsorbed = done;

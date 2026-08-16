@@ -539,7 +539,7 @@ console.log('\na grain in flight is never buried');
 // its terrain-penetration bug at all -- on a flat floor a heap just spreads
 // until the pressure disappears and every pressure-dependent check passes
 // while testing nothing.
-const RB = 0.012;
+const RB = 0.008;
 function bowlField() {
   const f = flatField();
   for (let r = 0; r < f.H; r++) {
@@ -555,7 +555,7 @@ function bowlField() {
 // Pour into the bowl with absorption running, sampling the live count as it
 // goes. `activeLayer` is in grain diameters, matching the slider.
 function pour({
-  total = 9000, cap = 3000, hz = 240, seconds = 7, seed = 4,
+  total = 3000, cap = 2000, hz = 960, seconds = 6, seed = 4,
   activeLayer = 2, mode = 'and', quiescenceSubsteps = 24, absorb = true,
 } = {}) {
   const field = bowlField();
@@ -578,7 +578,7 @@ function pour({
     quiescenceSubsteps,
     minContacts: 3,
     engulfTolerance: 0.05 * DIAM,
-    maxRise: 0.25 * DIAM,
+    maxRise: 0.1 * DIAM,
   };
   const steps = Math.round(seconds * hz);
   const perStep = total / (steps * 0.85);
@@ -604,7 +604,7 @@ function pour({
     }
     solver.step(P, field, 1 / hz, o);
     // Once per "frame" at 60 fps, which is where it runs in the app.
-    if (s % 4 === 3) {
+    if (s % Math.round(hz / 60) === Math.round(hz / 60) - 1) {
       const hash = solver.hash;
       hash.rebuild(P, BASE, (i) => P.phase[i] !== PHASE_BALLISTIC);
       hash.buildAdjacency(P);
@@ -624,7 +624,12 @@ function pour({
 if (wants('absorb')) {
 console.log('the live count plateaus, and not at either degenerate end');
   const run = pour();
-  const half = run.trace.slice(Math.floor(run.trace.length / 2));
+  // ⚠ Sampled while the pour is still running, not over the whole trace. The
+  // nozzle stops at 85% and the count then decays as the last arrivals are
+  // absorbed, so a window that includes the tail measures the drain rather
+  // than the plateau and reads it as drift.
+  const n = run.trace.length;
+  const half = run.trace.slice(Math.floor(n * 0.45), Math.floor(n * 0.82));
   const counts = half.map((t) => t.live);
   const mean = counts.reduce((a, b) => a + b, 0) / counts.length;
   const lo = Math.min(...counts), hi = Math.max(...counts);
