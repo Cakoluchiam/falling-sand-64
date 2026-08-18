@@ -60,7 +60,11 @@ function format(v) {
   return v.toExponential(1);
 }
 
-export function buildPanel(container, schema, vals, onChange) {
+// `liveReadouts` is optional and returns extra Derived lines that depend on
+// simulation state rather than on the sliders. The panel deliberately knows
+// nothing about the field or the grain store, so anything measured off them
+// arrives through this rather than by importing them.
+export function buildPanel(container, schema, vals, onChange, liveReadouts = null) {
   const groups = new Map();
   for (const s of schema) {
     if (!groups.has(s.group)) groups.set(s.group, []);
@@ -212,6 +216,9 @@ export function buildPanel(container, schema, vals, onChange) {
         ? `${format(derived.activeLayerMetres() * 1000)} mm`
         : 'never absorbs (pure DEM)'}`,
       `static angle ${derived.staticAngle().toFixed(1)}°`,
+      // Anything measured off the simulation rather than off the sliders. The
+      // panel deliberately knows nothing about the field or the grain store.
+      ...(liveReadouts ? liveReadouts() : []),
     ].join('\n');
   }
   refresh.push(paintDerived);

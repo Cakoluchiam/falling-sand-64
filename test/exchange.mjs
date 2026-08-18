@@ -616,7 +616,19 @@ function pour({
       const hash = solver.hash;
       hash.rebuild(P, BASE, (i) => P.phase[i] !== PHASE_BALLISTIC);
       hash.buildAdjacency(P);
-      if (absorb) ex.absorb(P, field, hash, exOpts);
+      if (absorb) {
+        ex.absorb(P, field, hash, exOpts);
+        // Emission runs right behind absorption in the frame loop, which is
+        // the ordering that exposed the stale-extrema bug -- see the churn
+        // check below.
+        ex.emit(P, field, {
+          activeLayerMetres: activeLayer * DIAM,
+          rng,
+          sizeMemory: true,
+          minGrainVolume: volOf(0.5 * 0.5 * DIAM),
+          maxEmitVolume: volOf(0.5 * 3.5 * DIAM),
+        });
+      }
       // ⚠ Asserted continuously rather than at the end. The forbidden state is
       // transient by nature -- the solver pushes a grain back out of the
       // terrain on the next substep -- so a check that only looks afterwards
@@ -667,6 +679,25 @@ console.log('absorption puts more sand through the same store than no absorption
   check('  so more sand fits through the same store', on.spawned > off.spawned * 1.2,
     `${on.spawned} poured against ${off.spawned}`);
   check('  and what was retired is in the field', on.field.volume > 0 && off.field.volume === 0);
+
+  // ⚠ Emission must not re-expose sand from a column that is entirely buried.
+  // `absorb` leaves the extrema computed with every grain past the active
+  // layer masked out, which is what its engulfment gate needs -- and a column
+  // lying wholly below the layer then has `grainTop = -Infinity`, which reads
+  // as an active layer of zero thickness. Emission refills it, absorption
+  // buries it again, forever.
+  //
+  // Found by watching the app rather than by any test: emission ran at 16% of
+  // absorption and kept running as the pile grew, while a snapshot of the same
+  // field showed 2 thin cells out of 1,431 and a median layer of 11.5 mm
+  // against a 2 mm target. Refreshing the extrema inside `emit` took it to
+  // 0.2%. The two readings disagreeing is what gave it away, so the assertion
+  // here is the ratio -- an absolute emission count would have looked
+  // unremarkable in both cases.
+  const churn = on.ex.emittedCount / Math.max(1, on.ex.absorbedCount);
+  console.log(`    emission ran at ${(churn * 100).toFixed(1)}% of absorption`);
+  check('  emission does not churn against absorption', churn < 0.02,
+    `${(churn * 100).toFixed(1)}% -- a buried column reading as a thin layer`);
 }
 
 if (wants('absorb')) {

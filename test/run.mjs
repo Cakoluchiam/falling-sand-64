@@ -36,6 +36,7 @@ const SUITES = [
   ['pour', 'pour.mjs', 'pour angle aims, pour spread widens, launch geometry'],
   ['hexfield', 'hexfield.mjs', 'lattice geometry, sampling continuity, volume ledger, relaxation'],
   ['hash', 'hash.mjs', 'contact broad phase: hierarchy, counting sort, exactly-once pairs'],
+  ['measure', 'measure.mjs', 'repose angle and footprint roundness, against surfaces with known answers'],
   // `contact` is split for the same reason as `clumps` below: it grew past a
   // minute and would otherwise set the matrix wall clock on its own.
   ['contact-surface', 'contact.mjs', 'a grain on the terrain: friction angle, sliding, bounce', 'surface'],

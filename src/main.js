@@ -15,6 +15,7 @@ import { OrbitCamera } from './gl/camera.js';
 import { GrainRenderer, INSTANCE_FLOATS } from './gl/grains.js';
 import { TerrainRenderer } from './gl/terrain.js';
 import { buildPanel } from './ui.js';
+import { reposeAngle, footprintAnisotropy } from './measure.js';
 
 const DEG = Math.PI / 180;
 
@@ -488,9 +489,30 @@ function main() {
     return;
   }
 
+  // ⚠ The measured repose angle, beside the dialed one. This is the half of
+  // the Pile group that could not exist until grains decided the slope: the
+  // slider says what the comparison arm would slump to, and this says what
+  // friction actually produced. They are deliberately different numbers, and
+  // the whole project is about the relationship between them.
+  //
+  // Reported as "not enough pile" rather than as a number until the fit has
+  // samples behind it -- an angle from three radial bins is noise wearing a
+  // unit, and this panel is the only instrument the project has.
   const sync = buildPanel(document.getElementById('panel'), SCHEMA, values, () => {
     enforceConstraints();
     sync();
+  }, () => {
+    const m = reposeAngle(app.field);
+    if (!Number.isFinite(m.angle)) {
+      return [`measured angle  not enough pile yet (${m.samples} bins)`];
+    }
+    const a = footprintAnisotropy(app.field);
+    return [
+      `measured angle  ${m.angle.toFixed(1)}° over ${m.samples} bins,` +
+        ` peak ${(m.peak * 1000).toFixed(1)} mm`,
+      `footprint  ${Number.isFinite(a.spread) ? `${(a.spread * 100).toFixed(1)}% spread,` +
+        ` ${(a.sixfold * 100).toFixed(1)}% six-fold` : 'incomplete'}`,
+    ];
   });
 
   window.addEventListener('keydown', (e) => {

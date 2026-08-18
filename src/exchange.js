@@ -411,6 +411,21 @@ export class ExchangeSolver {
     this.lastEmitted = 0;
     if (!Number.isFinite(target) || !(target > 0)) return 0;
 
+    // ⚠ Refresh the extrema first, and this is not defensive tidying.
+    // `absorb` leaves them computed with every grain past the active layer
+    // *masked out*, which is what the engulfment gate needs -- but it means a
+    // column lying entirely below the layer has `grainTop = -Infinity`, and
+    // reading that here says the active layer over the deepest part of the
+    // pile is zero thickness. Emission then refills a column that is already
+    // buried, forever.
+    //
+    // Measured with the stale extrema, emission ran at 16% of absorption and
+    // did not stop as the pile grew -- while a snapshot of the same field
+    // showed only 2 thin cells out of 1,431 and a median layer of 11.5 mm
+    // against a 2 mm target. The disagreement between those two readings is
+    // what gave it away.
+    this.updateExtrema(P, field);
+
     const top = field.grainTop, height = field.height;
     const scale = field.cellArea * field.packingFraction;
     const surf = this._surf;
