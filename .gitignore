@@ -21,3 +21,8 @@ desktop.ini
 # the test suite takes minutes, so it earns its place locally without being
 # something the repo should carry.
 .claudenosleep.ps1
+
+# Throwaway measurement harnesses. M4 used a lot of these -- headless copies
+# of the frame loop, run at app scale to settle a question and then deleted.
+# They are diagnostics, not suites, and they must not reach the repo.
+*probe*.mjs
