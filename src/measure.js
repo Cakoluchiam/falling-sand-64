@@ -37,12 +37,41 @@
 
 const DEG = 180 / Math.PI;
 
+/**
+ * ⚠ The surface of the *pile*, which is not the heightfield.
+ *
+ * `height` is only the part that has been absorbed; the grains standing on it
+ * are the rest of the pile and `grainTop` is where they reach. Measuring the
+ * flank off `height` alone measures whatever fraction happens to be buried,
+ * which makes the answer depend on the absorption rate rather than on the
+ * physics.
+ *
+ * That is not hypothetical. Sweeping the active layer to find what limits the
+ * flank angle, a heightfield-only fit read 22.5° at 2 grain diameters and 6.8°
+ * at 4 -- and the deeper setting had 43,716 live grains against 20,421
+ * absorbed, so what it actually measured was a stub with most of the pile
+ * sitting on top of it, unread. The comparison was between two different
+ * objects.
+ *
+ * Requires `grainTop` to be current, which the frame loop maintains.
+ */
+function pileSurface(field, out) {
+  const h = field.height, t = field.grainTop;
+  for (let c = 0; c < field.n; c++) {
+    const g = t[c];
+    out[c] = Number.isFinite(g) && g > h[c] ? g : h[c];
+  }
+  return out;
+}
+
 // Cells holding less than this fraction of the peak height are not pile. Low
 // enough to keep the toe of the flank, high enough to drop the single-cell
 // dusting that a few strays leave far out.
 const EDGE_FRACTION = 0.02;
 
 /** Volume-weighted centre of the buried pile, or null if nothing is buried. */
+export { pileSurface };
+
 export function pileCentre(field) {
   let sx = 0, sz = 0, total = 0;
   for (let c = 0; c < field.n; c++) {
@@ -65,12 +94,12 @@ export function pileCentre(field) {
  * `samples` is at least `minSamples`** -- a caller that reads the angle without
  * checking the count is reading noise on a pile that has barely started.
  */
-export function reposeAngle(field, { bins = 32, loFrac = 0.25, hiFrac = 0.85, minSamples = 5 } = {}) {
+export function reposeAngle(field, { bins = 32, loFrac = 0.25, hiFrac = 0.85, minSamples = 5, surface = null } = {}) {
   const centre = pileCentre(field);
   const out = { angle: NaN, peak: 0, reach: 0, samples: 0, centre };
   if (!centre) return out;
 
-  const h = field.height;
+  const h = surface || pileSurface(field, new Float64Array(field.n));
   let peak = 0;
   for (let c = 0; c < field.n; c++) if (h[c] > peak) peak = h[c];
   out.peak = peak;
@@ -146,12 +175,12 @@ export function reposeAngle(field, { bins = 32, loFrac = 0.25, hiFrac = 0.85, mi
  * Returns `{ spread, sixfold, mean, samples }`, with `samples` the number of
  * bearings that found any pile at all.
  */
-export function footprintAnisotropy(field, { bearings = 36, atFrac = 0.1 } = {}) {
+export function footprintAnisotropy(field, { bearings = 36, atFrac = 0.1, surface = null } = {}) {
   const centre = pileCentre(field);
   const out = { spread: NaN, sixfold: NaN, mean: 0, samples: 0 };
   if (!centre) return out;
 
-  const h = field.height;
+  const h = surface || pileSurface(field, new Float64Array(field.n));
   let peak = 0;
   for (let c = 0; c < field.n; c++) if (h[c] > peak) peak = h[c];
   if (!(peak > 0)) return out;

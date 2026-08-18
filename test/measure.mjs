@@ -87,6 +87,32 @@ console.log('a statistic with nothing behind it reports so, rather than a number
 }
 
 console.log('');
+console.log('the angle is the pile’s, not the buried fraction’s');
+{
+  // ⚠ `height` is only what has been absorbed; the grains standing on it are
+  // the rest of the pile. Fitting the flank off `height` alone measures
+  // whatever fraction happens to be buried, so the answer moves with the
+  // absorption rate rather than with the physics -- a heightfield-only fit read
+  // 22.5° at a 2-diameter active layer and 6.8° at 4, where the deeper setting
+  // simply had most of its pile still in grains.
+  const f = cone({ deg: 32, radius: 0.06 });
+  // Bury only a third of it, and let `grainTop` carry the rest.
+  for (let c = 0; c < f.n; c++) {
+    if (f.height[c] <= 0) continue;
+    f.grainTop[c] = f.height[c];
+    f.height[c] *= 1 / 3;
+  }
+  const buriedOnly = reposeAngle(f, { surface: f.height });
+  const whole = reposeAngle(f);
+  console.log(`    buried third alone reads ${buriedOnly.angle.toFixed(1)}°,` +
+    ` the whole pile ${whole.angle.toFixed(1)}°`);
+  check('  the buried fraction alone under-reads badly',
+    Math.abs(buriedOnly.angle - 32) > 8, `read ${buriedOnly.angle.toFixed(1)}°`);
+  check('  the pile surface still reads its true angle',
+    Math.abs(whole.angle - 32) < 0.8, `read ${whole.angle.toFixed(1)}°`);
+}
+
+console.log('');
 console.log('a round footprint reads round, and a six-fold one does not');
 {
   const round = footprintAnisotropy(cone({ deg: 32 }));
