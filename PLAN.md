@@ -64,7 +64,9 @@ Measured, and these are the numbers to keep: the friction transition sits at `at
 
 **Measured, and these are the numbers to keep.** Absorption bounds a continuous pour: at 6 g/s onto an open floor the live count settles at **9,282–10,427 across t = 8–10 s** while the same pour with absorption off climbs straight through 14,770. The volume audit closes exactly — `Σ solidVolume + Σ grain.vol`, no φ term — across runs exercising absorption. Worst penetration 705 µm against a mechanism bound of 831. Measured packing fraction 0.63–0.65 against a 0.62 bootstrap.
 
-**Still owed, and none of it started:** emission, the narrow wake, the repose measurement and Experiment 0, and the panel readout for the measured angle. `sizeMemory` is still dimmed. The clumps path has not been exercised through absorption.
+**The narrow wake is built.** ⚠ It is not an optimisation, which is how the plan frames it — it is a correctness fix. The solver's surface projection skips everything that is not awake, which is sound only while the terrain cannot move under a sleeper, and absorption breaks that premise every frame. A buried sleeper has nothing anywhere that would push it back out. Measured before the fix the exposure was one grain at 231 µm, small only because sleeping barely fires yet (22 grains of 3,993); it scales with exactly the thing absorption exists to enable. `wakeAll` stays for the relaxation arm, which is off by default and can afford it.
+
+**Still owed, and none of it started:** emission, the repose measurement and Experiment 0, and the panel readout for the measured angle. `sizeMemory` is still dimmed. The clumps path has not been exercised through absorption.
 
 **Two cycles found in the plan's own ordering**, both of which cost real time and both of which are the same shape — a mitigation gated on the thing it was supposed to enable:
 

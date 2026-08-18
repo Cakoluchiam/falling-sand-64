@@ -745,6 +745,63 @@ console.log('\nthe ∞ detent absorbs nothing at all');
     `only ${run.P.count} of ${run.cap}`);
 }
 
+if (wants('absorb')) {
+console.log('\nabsorption wakes the sleepers it built under, and only those');
+  // ⚠ The solver's surface projection skips anything not PHASE_AWAKE, which is
+  // safe only while the terrain cannot move under a sleeper. Absorption breaks
+  // that premise every frame, and a buried sleeper has nothing anywhere that
+  // would push it back out.
+  //
+  // The second half is the point: `wakeAll` would also pass the first check
+  // and would defeat sleeping entirely, which is the thing absorption exists
+  // to make possible.
+  const { field, P } = packedBlock({ cols: 6, layers: 6 });
+  // A grain parked well outside the block's footprint, resting and quiet.
+  const far = P.alloc();
+  P.radius[far] = R; P.vol[far] = volOf(R);
+  P.px[far] = 0.06; P.pz[far] = 0.06; P.py[far] = R;
+  P.phase[far] = PHASE_RESTING;
+  for (let k = 0; k < P.count; k++) P.stillTimer[P.live[k]] = 10_000;
+
+  const sleepers = [];
+  for (let k = 0; k < P.count; k++) {
+    if (P.phase[P.live[k]] === PHASE_RESTING) sleepers.push(P.live[k]);
+  }
+  const heightBefore = Float32Array.from(field.height);
+
+  const hash = prepared(P);
+  const ex = new ExchangeSolver(P.capacity);
+  const n = ex.absorb(P, field, hash, {
+    activeLayerMetres: 2 * DIAM, seedWindow, quiescenceMode: 'self',
+    quiescenceSubsteps: 24, minContacts: 3,
+    engulfTolerance: 0.05 * DIAM, maxRise: 0.1 * DIAM,
+  });
+
+  // ⚠ The narrowness check is per grain against the cells that actually moved,
+  // not a proportion. A count-based bound passes trivially on a fixture where
+  // the deposit covers most of the footprint -- here 993 of 1015 sleepers are
+  // legitimately over raised ground, and `wakeAll` would score the same.
+  let spurious = 0, woken = 0;
+  for (const i of sleepers) {
+    if (P.slot[i] < 0 || P.phase[i] !== PHASE_AWAKE) continue;
+    woken++;
+    const t = field.sampleTriangle(P.px[i], P.pz[i]);
+    const touched = heightBefore[t.i0] !== field.height[t.i0]
+      || heightBefore[t.i1] !== field.height[t.i1]
+      || heightBefore[t.i2] !== field.height[t.i2];
+    if (!touched) spurious++;
+  }
+  console.log(`    absorbed ${n}, woke ${woken} of ${sleepers.length} sleepers,` +
+    ` ${spurious} of them over ground that never moved`);
+
+  check('  the block absorbed something to build with', n > 20, `absorbed ${n}`);
+  check('  sleepers over the raised cells woke', woken > 0);
+  check('  and every grain woken was standing over ground that moved',
+    spurious === 0, `${spurious} woken over unchanged cells`);
+  check('  and a sleeper away from the deposit stayed asleep',
+    P.phase[far] === PHASE_RESTING);
+}
+
 // ⚠ A part that runs no checks must be red, not green. This suite is built a
 // part at a time and registered in `run.mjs` and the CI matrix by name, so the
 // obvious mistake is to register a part before its section exists -- which

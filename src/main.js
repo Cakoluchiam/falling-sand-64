@@ -395,6 +395,7 @@ class App {
       // means the quiescence test is starving, candidates without absorptions
       // means nothing is reaching the active-layer depth.
       `absorbed ${ex.absorbedCount}   this frame ${ex.lastAbsorbed}/${ex.lastCandidates}` +
+        `   woke ${ex.lastWoken}` +
         `   phi ${div.phi.toFixed(3)}   elev drift ${(div.worst * 1e6).toFixed(0)} um` +
         (Number.isFinite(derived.activeLayerMetres()) ? '' : '   PURE DEM'),
       `volume audit ${residual.toExponential(2)}  (${(rel * 100).toFixed(4)}%)`,

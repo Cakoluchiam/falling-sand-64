@@ -127,7 +127,7 @@
 // and it carries a **tolerance**, because "flush" and "below" are separated by
 // float noise on a Float32 height.
 
-import { PHASE_BALLISTIC, PHASE_RESTING } from './particles.js';
+import { PHASE_AWAKE, PHASE_BALLISTIC, PHASE_RESTING } from './particles.js';
 
 const SQRT3_2 = Math.sqrt(3) / 2;
 const NB_DX = [1, -1, 0.5, -0.5, 0.5, -0.5];
@@ -166,6 +166,9 @@ export class ExchangeSolver {
     this.lastAbsorbed = 0;
     this.lastCandidates = 0;
     this.lastDeferred = 0;
+    this.lastWoken = 0;
+    this._moved = null;
+    this._frame = 0;
   }
 
   /**
@@ -279,6 +282,15 @@ export class ExchangeSolver {
     }
     this.updateExtrema(P, field, skip);
 
+    // Which cells this pass raises, stamped with a frame counter rather than
+    // cleared -- 37k cells zeroed every frame to record a few dozen would cost
+    // more than the deposits do.
+    if (!this._moved || this._moved.length !== field.n) {
+      this._moved = new Int32Array(field.n);
+      this._frame = 0;
+    }
+    const moved = this._moved, frame = ++this._frame;
+
     // Where every cell's surface stood before this pass, so the rise can be
     // bounded below.
     if (!this._riseBase || this._riseBase.length !== field.n) {
@@ -335,6 +347,7 @@ export class ExchangeSolver {
         continue;
       }
       field.deposit(P.px[i], P.pz[i], vol[i], splat);
+      for (let c = 0; c < cells.length; c += 2) moved[cells[c]] = frame;
       this.absorbedVolume += vol[i];
       P.free(i);
       done++;
@@ -344,7 +357,53 @@ export class ExchangeSolver {
     this.absorbedCount += done;
     this.lastAbsorbed = done;
     this.lastDeferred = deferred;
+    this.lastWoken = done > 0 ? this.wakeOverMovedCells(P, field) : 0;
     return done;
+  }
+
+  /**
+   * Wake any sleeper standing over a cell this pass raised, and return how
+   * many. Called only when something was actually absorbed.
+   *
+   * ## ⚠ Why this is not optional, and why `wakeAll` will not do
+   *
+   * The contact solver's surface projection skips everything that is not
+   * PHASE_AWAKE, so a sleeping grain is never pushed back out of the terrain.
+   * That is correct while the terrain is a static ledger -- nothing can move
+   * underneath a sleeper -- and absorption breaks the premise, because it
+   * raises the surface every frame. A sleeper over a rising cell is buried and
+   * stays buried, with no mechanism anywhere that would notice.
+   *
+   * Measured before this existed, the exposure was one grain at 231 µm, which
+   * looks negligible and is only that small because sleeping barely fires yet:
+   * 22 grains of 3,993 in that run. The whole point of absorption is that the
+   * active layer thins until the solver converges and sleeping *starts*
+   * working, at which point this scales with it. Fixing it while it is cheap
+   * to see beats finding it once the pile is mostly asleep.
+   *
+   * `ContactSolver.wakeAll` is the blunt version and stays for the relaxation
+   * arm, which is off by default and can afford it. Absorption moves the
+   * surface every frame, so waking the whole pile every frame would defeat
+   * sleeping outright -- exactly the thing this is trying to protect.
+   */
+  wakeOverMovedCells(P, field) {
+    const { px, pz, phase, live } = P;
+    const moved = this._moved, frame = this._frame;
+    let woken = 0;
+    for (let k = 0; k < P.count; k++) {
+      const i = live[k];
+      if (phase[i] !== PHASE_RESTING) continue;
+      const t = field.sampleTriangle(px[i], pz[i]);
+      if (moved[t.i0] !== frame && moved[t.i1] !== frame && moved[t.i2] !== frame) continue;
+      // Phase and timers only. The next substep's predict pass sets `xprev`
+      // for every awake grain, and a sleeper's velocity is already zero, so
+      // there is nothing else to restore.
+      phase[i] = PHASE_AWAKE;
+      P.restTimer[i] = 0;
+      P.stillTimer[i] = 0;
+      woken++;
+    }
+    return woken;
   }
 
   /** One grain's contribution to the per-cell extrema, added back in. */
