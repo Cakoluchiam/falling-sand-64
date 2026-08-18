@@ -156,6 +156,8 @@ export class ExchangeSolver {
     this.topGrad = null;
     this._batch = new Int32Array(capacity);
     this._skip = new Uint8Array(capacity);
+    // Scratch for `sampleSurface`, which returns height and normal together.
+    this._surf = new Float64Array(4);
     this.extremaCounted = 0;
     this.seeds = 0;
     this.reached = 0;
@@ -167,6 +169,9 @@ export class ExchangeSolver {
     this.lastCandidates = 0;
     this.lastDeferred = 0;
     this.lastWoken = 0;
+    this.lastEmitted = 0;
+    this.emittedCount = 0;
+    this.emitBlocked = 0;
     this._moved = null;
     this._frame = 0;
   }
@@ -359,6 +364,141 @@ export class ExchangeSolver {
     this.lastDeferred = deferred;
     this.lastWoken = done > 0 ? this.wakeOverMovedCells(P, field) : 0;
     return done;
+  }
+
+  /**
+   * Put sand back where the active layer has run thin. Returns how many grains
+   * were emitted.
+   *
+   * ## The trigger is layer thickness alone, never a slope angle
+   *
+   * That is what keeps an angle constant out of the mass path entirely, and it
+   * is self-regulating: if a surface is too steep its grains slide, the layer
+   * thins, emission refills it, and those slide too. Repose stays an output.
+   *
+   * ## ⚠ The infinite active layer has to be refused before the arithmetic
+   *
+   * The plan flags this as a claim to check rather than inherit: with an
+   * infinite target the layer is *always* thinner than target, so the gate
+   * reads the other way round from the absorption side. Checked, and it is not
+   * merely harmless as the plan guesses. The deficit is `(target - layer) *
+   * area * phi`, which is `Infinity`, and a debt accumulator carrying that
+   * value is poisoned for the rest of the run -- `Infinity - anything` stays
+   * infinite, so the cell would emit forever once any sand reached it. The
+   * outcome the plan predicts (nothing to emit, because nothing was absorbed)
+   * holds only for a cell that is still empty. Refusing the whole pass at the
+   * detent is the honest guard, and it is also what the detent means.
+   *
+   * ## ⚠ No debt accumulator, and this deviates from the plan deliberately
+   *
+   * The plan specifies a per-cell volume debt so a fractional remainder can
+   * carry to the next step. That treats the deficit as a *flow* to be
+   * integrated, and it is not one -- it is a standing quantity, re-derived
+   * from the geometry every frame as `target - (grainTop - height)`. Adding a
+   * freshly measured deficit to a running total every frame double-counts it,
+   * because the layer does not change until something is actually emitted, and
+   * the accumulator runs away.
+   *
+   * The slicing problem the debt was introduced to solve does not arise under
+   * a standing deficit: when the gap is smaller than a whole grain, nothing is
+   * emitted and the gap simply stays measured. It grows on its own as
+   * absorption retires more from underneath, until it covers a grain. That is
+   * the same "conserve by construction rather than by tolerance" the rest of
+   * the mass path follows -- there is no accumulator here that could drift.
+   */
+  emit(P, field, o) {
+    const target = o.activeLayerMetres;
+    this.lastEmitted = 0;
+    if (!Number.isFinite(target) || !(target > 0)) return 0;
+
+    const top = field.grainTop, height = field.height;
+    const scale = field.cellArea * field.packingFraction;
+    const surf = this._surf;
+    let made = 0;
+
+    for (let c = 0; c < field.n; c++) {
+      if (!(field.solidVolume[c] > 0)) continue;
+      const t = top[c];
+      const layer = Number.isFinite(t) ? t - height[c] : 0;
+      if (layer >= target) continue;
+      const gap = (target - layer) * scale;
+      if (!(gap > 0)) continue;
+
+      const q = c % field.W, r = (c / field.W) | 0;
+      const x = field.cellX(q, r), z = field.cellZ(r);
+      const want = this._sampleEmitVolume(field, c, o);
+      if (!(want > 0) || want > gap) continue;
+      if (field.solidVolume[c] < want) continue;
+
+      // ⚠ Take from the field first and build the grain out of what was
+      // actually paid. `debit` spreads over the same triangle `deposit` does,
+      // so a neighbouring cell running dry returns less than was asked for --
+      // and a grain sized to the request rather than the payment is the field
+      // minting sand. If the payment is too small to be a grain, it goes
+      // straight back, to the same position and therefore the same cells.
+      const paid = field.debit(x, z, want, field.s);
+      if (paid < o.minGrainVolume) {
+        if (paid > 0) field.deposit(x, z, paid, field.s);
+        continue;
+      }
+
+      const i = P.alloc();
+      if (i < 0) { field.deposit(x, z, paid, field.s); this.emitBlocked++; break; }
+
+      const radius = 0.5 * Math.cbrt((6 * paid) / Math.PI);
+      P.vol[i] = paid;
+      P.radius[i] = radius;
+      const a = o.rng.next() * Math.PI * 2;
+      const rad = Math.sqrt(o.rng.next()) * field.s * 0.4;
+      P.px[i] = x + Math.cos(a) * rad;
+      P.pz[i] = z + Math.sin(a) * rad;
+      field.sampleSurface(P.px[i], P.pz[i], surf);
+      // Resting on the surface it came out of, along its normal.
+      P.py[i] = surf[0] + radius / Math.max(surf[2], 1e-6);
+      P.vx[i] = 0; P.vy[i] = 0; P.vz[i] = 0;
+      P.colorSeed[i] = o.rng.next();
+      P.restTimer[i] = 0; P.stillTimer[i] = 0;
+      P.ax[i] = P.px[i]; P.ay[i] = P.py[i]; P.az[i] = P.pz[i];
+      P.isAgg[i] = 0;
+      P.phase[i] = PHASE_AWAKE;
+      made++;
+    }
+
+    this.lastEmitted = made;
+    this.emittedCount += made;
+    return made;
+  }
+
+  /**
+   * A grain volume for cell `c`, drawn from what that cell remembers burying.
+   *
+   * ⚠ Clamped below the clump threshold, which is the one place this design is
+   * knowingly less faithful than the alternative: a cell that buried clumps
+   * re-emits coarse sand rather than clumps. The cost is accepted so a boulder
+   * cannot pop out of a smooth surface. Open concern 1 asks whether emission
+   * fires often enough for that to matter, which is what `emittedCount` is for.
+   */
+  _sampleEmitVolume(field, c, o) {
+    const lo = Math.log(o.minGrainVolume);
+    const hi = Math.log(o.maxEmitVolume);
+    if (!(hi > lo)) return Math.exp(lo);
+    const m = o.sizeMemory ? field.sizeMoments(c) : null;
+    if (!m) {
+      // Nothing remembered here, so fall back to the global distribution --
+      // uniform in log volume between the limits is the least-committal draw
+      // that still respects them.
+      return Math.exp(lo + o.rng.next() * (hi - lo));
+    }
+    const sigma = Math.sqrt(m.varLogVol);
+    if (!(sigma > 1e-12)) {
+      return Math.min(Math.max(Math.exp(m.meanLogVol), Math.exp(lo)), Math.exp(hi));
+    }
+    // Invert the CDF between the limits rather than redrawing, for the same
+    // reason `Rng.truncatedGaussian` exists: a tight window would otherwise
+    // pile a spike against whichever boundary the rejections bounce off.
+    const zlo = (lo - m.meanLogVol) / sigma;
+    const zhi = (hi - m.meanLogVol) / sigma;
+    return Math.exp(m.meanLogVol + sigma * o.rng.truncatedGaussian(zlo, zhi));
   }
 
   /**

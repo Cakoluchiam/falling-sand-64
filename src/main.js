@@ -97,6 +97,8 @@ class App {
       this.exchange.absorbedVolume = 0;
       this.exchange.lastAbsorbed = 0;
       this.exchange.lastCandidates = 0;
+      this.exchange.emittedCount = 0;
+      this.exchange.emitBlocked = 0;
     }
   }
 
@@ -273,6 +275,17 @@ class App {
       engulfTolerance: CONFIG.engulfTolerance * values.medianDiameter,
       maxRise: CONFIG.maxSurfaceRise * values.medianDiameter,
     });
+    // ⚠ After absorption, not before. Emission reads the active-layer
+    // thickness, and absorption is what changes it -- running first would size
+    // every refill against a layer one frame stale, and on the frame a column
+    // was retired that is exactly the layer emission is meant to notice.
+    this.exchange.emit(P, this.field, {
+      activeLayerMetres: derived.activeLayerMetres(),
+      rng: this.rng,
+      sizeMemory: values.sizeMemory,
+      minGrainVolume: derived.volumeOfDiameter(derived.minGrainDiameter()),
+      maxEmitVolume: derived.volumeOfDiameter(derived.maxEmitDiameter()),
+    });
   }
 
   integrateBallistic(dt) {
@@ -395,7 +408,7 @@ class App {
       // means the quiescence test is starving, candidates without absorptions
       // means nothing is reaching the active-layer depth.
       `absorbed ${ex.absorbedCount}   this frame ${ex.lastAbsorbed}/${ex.lastCandidates}` +
-        `   woke ${ex.lastWoken}` +
+        `   woke ${ex.lastWoken}   emitted ${ex.emittedCount}` +
         `   phi ${div.phi.toFixed(3)}   elev drift ${(div.worst * 1e6).toFixed(0)} um` +
         (Number.isFinite(derived.activeLayerMetres()) ? '' : '   PURE DEM'),
       `volume audit ${residual.toExponential(2)}  (${(rel * 100).toFixed(4)}%)`,

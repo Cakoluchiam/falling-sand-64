@@ -802,6 +802,152 @@ console.log('\nabsorption wakes the sleepers it built under, and only those');
     P.phase[far] === PHASE_RESTING);
 }
 
+// ------------------------------------------------------------------ emit ----
+
+// A patch of buried sand with no grains standing on it: the state emission
+// exists to correct. Deposited straight into the ledger, so the active layer
+// over it is zero and the whole target thickness is owed.
+function buriedPatch({ radius = 0.02, depth = 0.01 } = {}) {
+  const field = flatField();
+  const per = depth * field.cellArea * field.packingFraction;
+  let placed = 0;
+  for (let r = 0; r < field.H; r++) {
+    for (let q = 0; q < field.W; q++) {
+      const x = field.cellX(q, r), z = field.cellZ(r);
+      if (Math.hypot(x, z) > radius) continue;
+      field.deposit(x, z, per, field.s);
+      placed++;
+    }
+  }
+  return { field, cells: placed };
+}
+
+const emitOpts = (rng, over = {}) => ({
+  activeLayerMetres: 2 * DIAM,
+  rng,
+  sizeMemory: true,
+  minGrainVolume: volOf(0.5 * 0.5 * DIAM),
+  maxEmitVolume: volOf(0.5 * 3.5 * DIAM),
+  ...over,
+});
+
+// Drive emission to a standstill, refreshing the extrema between passes the
+// way the frame loop does.
+function refill(field, P, ex, opts, maxPasses = 400) {
+  let passes = 0, total = 0;
+  for (; passes < maxPasses; passes++) {
+    ex.updateExtrema(P, field);
+    const n = ex.emit(P, field, opts);
+    total += n;
+    if (n === 0) break;
+  }
+  return { passes, total };
+}
+
+if (wants('emit')) {
+console.log('emission refills a thin active layer and stops when it is full');
+  const { field } = buriedPatch();
+  const P = new Particles(20000);
+  const ex = new ExchangeSolver(P.capacity);
+  const rng = new Rng(9);
+  const before = field.volume;
+  const { passes, total } = refill(field, P, ex, emitOpts(rng));
+  console.log(`    ${total} grains over ${passes} passes; field went ` +
+    `${(before * 1e9).toFixed(1)} to ${(field.volume * 1e9).toFixed(1)} mm3`);
+
+  check('  it emitted something', total > 100, `only ${total}`);
+  check('  and it stopped on its own', passes < 400, `ran to the ${passes}-pass cap`);
+  check('  the field paid for every grain', field.volume < before);
+  check('  and the store holds what the field lost',
+    Math.abs((before - field.volume) - P.totalVolume()) < 1e-15,
+    `field lost ${(before - field.volume).toExponential(3)}, grains hold ${P.totalVolume().toExponential(3)}`);
+}
+
+if (wants('emit')) {
+console.log('');
+console.log('nothing is minted, sliced, or left below the size floor');
+  const { field } = buriedPatch();
+  const P = new Particles(20000);
+  const ex = new ExchangeSolver(P.capacity);
+  const opts = emitOpts(new Rng(3));
+  const before = field.volume;
+  refill(field, P, ex, opts);
+
+  let tooSmall = 0, tooBig = 0, mismatched = 0;
+  for (let k = 0; k < P.count; k++) {
+    const i = P.live[k];
+    if (P.vol[i] < opts.minGrainVolume * (1 - 1e-9)) tooSmall++;
+    if (P.vol[i] > opts.maxEmitVolume * (1 + 1e-9)) tooBig++;
+    // The radius must be the radius of that volume: emission builds the grain
+    // out of what the field actually paid, so the two cannot disagree. ⚠ Bound
+    // by the *storage*, not by taste -- `vol` and `radius` are Float32Arrays,
+    // so the round trip through them carries an ulp and a 1e-12 absolute
+    // tolerance flagged 807 perfectly good grains.
+    const want = 0.5 * Math.cbrt((6 * P.vol[i]) / Math.PI);
+    if (Math.abs(P.radius[i] - want) > want * 1e-6) mismatched++;
+  }
+  check('  no grain is under the size floor', tooSmall === 0, `${tooSmall} grains`);
+  check('  none is above the clump threshold', tooBig === 0, `${tooBig} grains`);
+  check('  every radius matches its volume', mismatched === 0, `${mismatched} grains`);
+  check('  the ledger balances exactly',
+    Math.abs(before - (field.volume + P.totalVolume())) < 1e-15);
+}
+
+if (wants('emit')) {
+console.log('');
+console.log('a refilled layer reaches the target thickness and then holds');
+  const { field } = buriedPatch();
+  const P = new Particles(20000);
+  const ex = new ExchangeSolver(P.capacity);
+  const rng = new Rng(11);
+  const { total } = refill(field, P, ex, emitOpts(rng));
+
+  // ⚠ Asserted as thickness, not as "the next pass emits zero". Whether a
+  // given cell tips over depends on the volume drawn for it, so a cell whose
+  // gap sits just under a typical grain is genuinely stochastic at the margin
+  // and a strict zero fails about as often as it passes. The property that
+  // actually matters is that the layer got to target and stays there.
+  let covered = 0, thin = 0;
+  for (let c = 0; c < field.n; c++) {
+    if (!(field.solidVolume[c] > 0)) continue;
+    const t = field.grainTop[c];
+    if (!Number.isFinite(t)) { thin++; covered++; continue; }
+    covered++;
+    if (t - field.height[c] < 2 * DIAM - DIAM) thin++;
+  }
+  const settled = P.count;
+  ex.updateExtrema(P, field);
+  const again = ex.emit(P, field, emitOpts(rng));
+  console.log(`    ${covered} buried cells, ${thin} still short of target,` +
+    ` ${again} further grains against ${total} in the refill`);
+
+  check('  the buried patch is covered', covered > 100, `${covered} cells`);
+  check('  nearly every cell reached the target thickness',
+    thin < covered * 0.05, `${thin} of ${covered} still thin`);
+  check('  and a settled layer barely emits again',
+    again < Math.max(4, total * 0.01), `${again} more against ${total}`);
+  check('  the population did not run away', P.count < settled * 1.02);
+}
+
+if (wants('emit')) {
+console.log('');
+console.log('the infinity detent emits nothing, and poisons nothing');
+  // The plan flags this as a claim to check rather than inherit: with an
+  // infinite target the layer is always thinner than target, so the gate reads
+  // the other way round from absorption's. Refusing the pass is what keeps an
+  // Infinity out of the deficit arithmetic.
+  const { field } = buriedPatch();
+  const P = new Particles(20000);
+  const ex = new ExchangeSolver(P.capacity);
+  const before = field.volume;
+  const n = ex.emit(P, field, emitOpts(new Rng(5), { activeLayerMetres: Infinity }));
+  check('  nothing was emitted', n === 0);
+  check('  the field is untouched', field.volume === before);
+  check('  no grain was created', P.count === 0);
+  check('  and no height went non-finite',
+    Array.from(field.height).every((h) => Number.isFinite(h)));
+}
+
 // ⚠ A part that runs no checks must be red, not green. This suite is built a
 // part at a time and registered in `run.mjs` and the CI matrix by name, so the
 // obvious mistake is to register a part before its section exists -- which

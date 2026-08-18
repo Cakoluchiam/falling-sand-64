@@ -407,6 +407,16 @@ export const derived = {
   minGrainDiameter() {
     return values.minGrainRatio * values.medianDiameter;
   },
+  volumeOfDiameter(d) {
+    return (Math.PI / 6) * d * d * d;
+  },
+  // Largest grain emission may re-expose. ⚠ Clamped below the clump threshold,
+  // not merely below the grain size cap: a cell that buried clumps would
+  // otherwise pop a boulder out of a smooth surface. The accepted cost is that
+  // such a cell re-exposes as coarse sand -- see open concern 1.
+  maxEmitDiameter() {
+    return Math.min(derived.maxDiameter(), derived.minClumpDiameter());
+  },
   // Rough width of the stream where it lands, ignoring drag and turbulence.
   // Enough to answer "is a clump a big fraction of the stream or a small one",
   // which is the question the pour angle exists to change.
@@ -681,8 +691,8 @@ export const SCHEMA = [
     help: 'How deep the layer of individually simulated grains goes, counted in grain diameters. Anything buried deeper is absorbed into the pile surface to keep the grain budget bounded. Both ends of this slider are special: 0 absorbs a grain as soon as it is covered, and ∞ never absorbs anything, which is pure DEM — every grain simulated forever. That end is the reference run for checking that absorption is not changing the pile shape, and it is a diagnostic rather than a usable setting, since the grain budget fills in seconds. Note the depth is a multiple of grain size while a pile is not, so no finite setting here means "never absorb" — only the ∞ detent does.',
   },
   {
-    key: 'sizeMemory', group: 'Exchange', label: 'Size memory', type: 'bool', pending: true,
-    help: 'Remember which grain sizes were buried where, so a disturbed pile re-exposes the sizes that were actually there instead of average ones.' + SOON,
+    key: 'sizeMemory', group: 'Exchange', label: 'Size memory', type: 'bool',
+    help: 'Remember which grain sizes were buried where, so a disturbed pile re-exposes the sizes that were actually there instead of average ones. Note a cell that buried clumps re-exposes as coarse sand rather than as clumps — emitted sizes are capped below the clump threshold so a boulder cannot appear out of a smooth surface.',
   },
   {
     key: 'packingFraction', group: 'Exchange', label: 'Packing fraction',
