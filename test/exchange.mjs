@@ -633,13 +633,14 @@ if (wants('absorb')) {
 console.log('absorption puts more sand through the same store than no absorption');
   // ⚠ An A/B against an identical pour, and deliberately **not** a plateau.
   //
-  // The plateau is real and it is the milestone's headline: measured in the
-  // app at 6 g/s onto an open floor, the live count settles at 9,282-10,427
-  // across t = 8-10 s while the same pour with absorption off climbs straight
-  // through 14,770 and keeps going. But it is an emergent, system-scale
-  // property. The pile has to spread until its footprint gives absorption
-  // enough surface to keep up with the nozzle, and that took eight seconds and
-  // ten thousand grains.
+  // ⚠ And not a plateau in the app either, which an earlier revision of this
+  // comment claimed off three samples. Run to thirty seconds the live count is
+  // still climbing -- 6,509 / 10,517 / 14,857 / 17,180 / 20,306 / 23,205 at
+  // five-second marks. Nothing is wrong: the pile spreads throughout, and the
+  // active layer is a *surface*, so it grows with the footprint. What
+  // absorption bounds is the population to that surface, which is a 4.8x
+  // reduction and widening -- 23,205 live against roughly 111,000 poured,
+  // where the same pour without absorption passes 14,770 by t = 5 s alone.
   //
   // A fixture small enough for CI cannot reach that regime, and the failure is
   // a trap rather than an inconvenience: shrink the pour until the wall clock
