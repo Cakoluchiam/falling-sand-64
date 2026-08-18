@@ -80,7 +80,18 @@ This confirms the plan's model rather than contradicting it, and the arithmetic 
 
   A wrong turn worth keeping: the churn was first blamed on absorption and emission using different depth measures, and an `emitHysteresis` knob was added for it. Measured, that moved nothing — 12.2% to 11.7% — so it was reverted rather than left in as an inert parameter with a confident story attached.
 
-**Still owed:** Experiment 0 and the friction-saturation sweep, and the clumps path through absorption.
+**⚠ Repose is measurable but not yet trustworthy, and open concern 4 stays open.** The estimator was wrong twice on real poured piles, in ways the known-cone tests could not catch because a constructed cone has neither problem:
+
+  1. **It read `height` alone**, which is only the buried fraction. Sweeping the active layer, it reported 22.5° at 2 grain diameters and 6.8° at 4 — and the deeper setting had 43,716 live grains against 20,421 absorbed, so it measured a stub with most of the pile sitting unread on top. Fixed by fitting `max(height, grainTop)`.
+  2. **It took the pile's extent as a maximum**, which is set by whichever grain bounced furthest. On a poured pile that stretched the reach from 60 mm to 81 mm and dragged the angle from 20.4° to 11.5° with the pile itself unchanged. Fixed with a 98th percentile.
+
+  Both are pinned by tests now. But the sweep that motivated them was run under the first fault, so **its numbers are void**: the apparent saturation at ~21° across μ = 0.5–1.5 was measured on the buried fraction, and the corrected estimator has not been swept. Open concern 4 asks whether the flank saturates where translation-only spheres have no rolling mode to plateau against, and that question is **unanswered** — do not read the void numbers as evidence either way.
+
+  The recurring shape, for the third time this milestone: **a fixture that removes the very feature the estimator is fragile to will certify the estimator.** A constructed cone has no skirt and no buried/live split, so it validated a fit that both faults would have broken.
+
+**Experiment 0 is degenerate as currently posed.** With the arm on at a dialed 32°, the pile measured 19.6° against 20.4° with it off — because the arm only ever *reduces* slopes past its threshold, and the emergent pile never reaches 32°, so it has nothing to do. The comparison the experiment exists for cannot be made until the emergent angle is at least as steep as the dialed one. That is a real result about the arm and not a failed run, but it means Experiment 0 remains open too.
+
+**Still owed:** a swept friction saturation curve on the corrected estimator, Experiment 0 once the angles are comparable, and the clumps path through absorption.
 
 **Two cycles found in the plan's own ordering**, both of which cost real time and both of which are the same shape — a mitigation gated on the thing it was supposed to enable:
 

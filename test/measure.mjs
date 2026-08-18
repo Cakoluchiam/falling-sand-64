@@ -113,6 +113,29 @@ console.log('the angle is the pile’s, not the buried fraction’s');
 }
 
 console.log('');
+console.log('one stray grain does not flatten the flank');
+{
+  // ⚠ The pile's extent is a high percentile of the covered radius, not the
+  // maximum. A max is set by whichever grain bounced furthest, every radial
+  // bin then spans more ground than it should, and the fit flattens. On a real
+  // poured pile that stretched the reach from 60 mm to 81 mm and took the
+  // angle from 20.4 degrees to 11.5 with the pile itself unchanged.
+  const clean = cone({ deg: 32, radius: 0.05 });
+  const before = reposeAngle(clean).angle;
+  const strewn = cone({ deg: 32, radius: 0.05 });
+  // A handful of stragglers well clear of the pile, each a real cell of height.
+  for (let k = 0; k < 6; k++) {
+    const c = strewn.index(80 + k * 3, 80);
+    strewn.height[c] = 0.002;
+    strewn.solidVolume[c] = 0.002 * strewn.cellArea * strewn.packingFraction;
+  }
+  const after = reposeAngle(strewn).angle;
+  console.log(`    clean ${before.toFixed(1)}°, with six strays ${after.toFixed(1)}°`);
+  check('  the strays barely move the angle', Math.abs(after - before) < 2.5,
+    `${before.toFixed(1)}° to ${after.toFixed(1)}°`);
+}
+
+console.log('');
 console.log('a round footprint reads round, and a six-fold one does not');
 {
   const round = footprintAnisotropy(cone({ deg: 32 }));
