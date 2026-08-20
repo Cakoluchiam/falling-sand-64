@@ -52,15 +52,17 @@ jobs:
         # tightens this without anything here changing.
         #
         # Ordered by measured local runtime, longest first:
-        #   exchange-absorb 214s   clumps-spread 101s   clumps-rate 87s
+        #   exchange-absorb 534s   clumps-spread 103s   clumps-rate 88s
         #   contact-pairs 47s   clumps-stream 47s   contact-repose 45s
         #   exchange-producers 15s   hexfield 14s   contact-sleep 10s
         #   everything else under a second
         #
-        # `exchange-absorb` now sets the makespan on its own: it pours nine
-        # thousand grains twice, with and without absorption, because the
-        # comparison is the check. Splitting it further would mean pouring
-        # twice as often rather than half as long.
+        # `exchange-absorb` sets the makespan on its own and has grown to nine
+        # minutes: it pours nine thousand grains three times over -- with
+        # absorption, without it, and again with lumps in the stream -- because
+        # each comparison is the check. Splitting it further would mean pouring
+        # more often rather than for less time, so the cost is the fixture and
+        # not the packaging.
         suite: [exchange-absorb, clumps-spread, clumps-rate, contact-pairs,
                 clumps-stream, contact-repose, exchange-producers, hexfield,
                 contact-sleep, pour, modules, sizes, smoke, hash,

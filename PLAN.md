@@ -85,13 +85,33 @@ This confirms the plan's model rather than contradicting it, and the arithmetic 
   1. **It read `height` alone**, which is only the buried fraction. Sweeping the active layer, it reported 22.5° at 2 grain diameters and 6.8° at 4 — and the deeper setting had 43,716 live grains against 20,421 absorbed, so it measured a stub with most of the pile sitting unread on top. Fixed by fitting `max(height, grainTop)`.
   2. **It took the pile's extent as a maximum**, which is set by whichever grain bounced furthest. On a poured pile that stretched the reach from 60 mm to 81 mm and dragged the angle from 20.4° to 11.5° with the pile itself unchanged. Fixed with a 98th percentile.
 
-  Both are pinned by tests now. But the sweep that motivated them was run under the first fault, so **its numbers are void**: the apparent saturation at ~21° across μ = 0.5–1.5 was measured on the buried fraction, and the corrected estimator has not been swept. Open concern 4 asks whether the flank saturates where translation-only spheres have no rolling mode to plateau against, and that question is **unanswered** — do not read the void numbers as evidence either way.
+  Both are pinned by tests now, and the sweep was re-run on the corrected estimator:
+
+  | μ | `atan(μ)` | fitted flank | peak/reach |
+  |---|---|---|---|
+  | 0.2 | 11.3° | 7.3° | 8.5° |
+  | 0.5 | 26.6° | 11.5° | 12.8° |
+  | 0.9 | 42.0° | 11.5° | 13.7° |
+  | 1.5 | 56.3° | 10.7° | 14.2° |
+
+  **The flank saturates**, on two independent statistics — the least-squares fit and the cruder, more robust peak-over-reach ratio, which climbs 8.5° to 14.2° while `atan(μ)` climbs 11.3° to 56.3°. **Open concern 4 says this should not happen**: these grains have no rotational degrees of freedom, so there is no rolling failure mode to plateau against, and "a plateau found where the kinematics cannot produce one means something else is limiting the pile and is worth chasing".
+
+  Read it as a signal rather than a number. The estimator has been wrong twice already on real piles, the pile is measured mid-pour rather than settled, and the obvious suspect — that a 2-diameter active layer freezes material mid-slide, where the plan says avalanching runs five to ten diameters deep — has not been separated out, because sweeping the layer changes how much of the pile is heightfield and how much is grains at the same time.
 
   The recurring shape, for the third time this milestone: **a fixture that removes the very feature the estimator is fragile to will certify the estimator.** A constructed cone has no skirt and no buried/live split, so it validated a fit that both faults would have broken.
 
 **Experiment 0 is degenerate as currently posed.** With the arm on at a dialed 32°, the pile measured 19.6° against 20.4° with it off — because the arm only ever *reduces* slopes past its threshold, and the emergent pile never reaches 32°, so it has nothing to do. The comparison the experiment exists for cannot be made until the emergent angle is at least as steep as the dialed one. That is a real result about the arm and not a failed run, but it means Experiment 0 remains open too.
 
-**Still owed:** a swept friction saturation curve on the corrected estimator, Experiment 0 once the angles are comparable, and the clumps path through absorption.
+**⚠ Clumps through absorption do not work, and the fix is design rather than tuning.** Measured with 6 mm lumps poured into a settling pile: **220 of 225 lumps never retire**, and terrain climbs over them by up to **44,432 µm** — seven lumps deep. Four distinct mechanisms were found and three are fixed:
+
+  1. **Burial was measured to a grain's centre**, so a body was buried by its own size: a 6 mm lump sitting fully exposed has its centre 3 mm down and read as deeper than a 2 mm active layer. Fixed — eligibility now subtracts the radius, which is what the plan means by "geometric burial on center+radius". At app scale this cost 11% of the absorption rate (39,125 to 34,782); in a CI-sized fixture it cost five-sixths, which is the fixture being far more sensitive to the threshold than the app is.
+  2. **A body with `r == s` took the narrow footprint branch**, registering extrema in three cells while occupying a dozen. Fixed — the threshold is half the spacing.
+  3. **`grainTop` and `grainBottom` want different footprints.** `grainBottom` is protection and must span the body's disc; `grainTop` is a *surface estimate* and must not, because a lump's apex spread across its neighbours tells them the surface is a lump-radius higher than it is, so grains there read as deep and get absorbed. Widening both took penetration from 10,453 µm to 44,310. Fixed — the two are registered separately.
+  4. **Unfixed: a deferred body is held out of its own protection.** A lump qualifies by depth, so it is excluded from the engulfment reference; its footprint is wide, so the gate defers it every pass; and with nothing recording its underside, terrain climbs over it. Re-registering deferred grains fixes that and halves the absorption rate — 2,561 absorbed against 1,228 on the same pour. **Neither branch is right.**
+
+  The three rules — what is eligible, what is held out of the reference, and what the gate permits — are one coupled system, and four passes at it each traded absorption rate against engulfment without settling. The `exchange-absorb` suite asserts the parts that do hold (the audit closes with lumps in the mass path, no freed lump leaks into the aggregate list) and deliberately does not pin the two that do not, because a red check would say the code regressed when this path was simply never built.
+
+**Still owed:** the clumps coupling above, Experiment 0 once the emergent and dialed angles are comparable, and a re-swept saturation curve if the estimator is trusted further.
 
 **Two cycles found in the plan's own ordering**, both of which cost real time and both of which are the same shape — a mitigation gated on the thing it was supposed to enable:
 

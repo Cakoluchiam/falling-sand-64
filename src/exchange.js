@@ -252,7 +252,15 @@ export class ExchangeSolver {
       if (hash.adjStart[i + 1] - hash.adjStart[i] < o.minContacts) continue;
       if (!this._quiescent(P, hash, i, o.quiescenceMode, o.quiescenceSubsteps)) continue;
       this.lastCandidates++;
-      if (!(this.depth[i] > cutoff)) continue;
+      // ⚠ Measured from the grain's **top**, not its centre. Without this a
+      // body is buried by its own size: a 6 mm lump sitting fully exposed has
+      // its centre 3 mm down, so it read as deeper than a 2 mm active layer
+      // and qualified while in plain sight -- which then held it out of the
+      // engulfment reference and let terrain rise over it. The plan states the
+      // rule as `grainTop - (py + radius)` for exactly this reason, and calls
+      // it "geometric burial on center+radius" because it self-corrects for
+      // polydispersity: big grains take proportionally longer to bury.
+      if (!(this.buriedDepth(P, i) > cutoff)) continue;
       batch[n++] = i;
     }
 
@@ -283,7 +291,7 @@ export class ExchangeSolver {
     const skip = this._skip;
     for (let k = 0; k < P.count; k++) {
       const i = live[k];
-      if (phase[i] !== PHASE_BALLISTIC && this.depth[i] > cutoff) skip[i] = 1;
+      if (phase[i] !== PHASE_BALLISTIC && this.buriedDepth(P, i) > cutoff) skip[i] = 1;
     }
     this.updateExtrema(P, field, skip);
 
@@ -344,10 +352,25 @@ export class ExchangeSolver {
         // this pass is checked against a surface that has forgotten it, and it
         // gets buried by a neighbour it just successfully blocked. Measured,
         // that alone drove grains 1.6 mm under the terrain.
-        // ⚠ Not re-registered. It was held out because it is deeper than the
-        // active layer, which is still true -- it was refused this pass only
-        // because the surface would have climbed too far in one go. Putting it
-        // back would restore exactly the blocker the depth exclusion removes.
+        // ⚠ Deliberately NOT re-registered, and this is a known defect for
+        // large bodies rather than a settled decision. See "clumps through
+        // absorption" in PLAN.md.
+        //
+        // Leaving it out is right for sand: a grain deferred this pass is
+        // still past the active layer and still leaving, and putting it back
+        // restores the blocker that made absorption stall -- measured, 2,561
+        // absorbed without the re-registration against 1,228 with it, on the
+        // same pour.
+        //
+        // It is wrong for a lump. A lump qualifies by depth, so it is held out
+        // of the engulfment reference; its footprint is wide, so the gate
+        // defers it every pass; and with nothing recording its underside,
+        // terrain climbs over it -- 44,432 µm measured, seven lumps deep.
+        // Re-registering fixes that and costs half the absorption rate, so
+        // neither branch is right and the choice between them is not the fix.
+        // The three rules -- what is eligible, what is held out of the
+        // reference, and what the gate permits -- are one coupled system and
+        // want deciding together.
         deferred++;
         continue;
       }
@@ -561,22 +584,34 @@ export class ExchangeSolver {
     return woken;
   }
 
+  /**
+   * How much material stands over a grain, measured from its own top.
+   *
+   * `depth` is the distance to a grain's **centre**, which is right for the
+   * shortest-path relaxation that produces it and wrong for eligibility: it
+   * makes a body buried by its own size, so the larger the grain the more
+   * buried it looks while sitting on the surface.
+   */
+  buriedDepth(P, i) {
+    return this.depth[i] - P.radius[i];
+  }
+
   /** One grain's contribution to the per-cell extrema, added back in. */
   _register(P, field, i) {
     const r = P.radius[i];
     const hi = P.py[i] + r, lo = P.py[i] - r;
     const top = field.grainTop, bottom = field.grainBottom;
-    if (r <= field.s) {
-      const t = field.sampleTriangle(P.px[i], P.pz[i]);
-      for (const idx of [t.i0, t.i1, t.i2]) {
-        if (top[idx] < hi) top[idx] = hi;
-        if (bottom[idx] > lo) bottom[idx] = lo;
-      }
+    // Mirrors `updateExtrema` exactly, including the split footprints -- a
+    // deferred grain must go back in the same shape it was held out of, or the
+    // reference the gate consults disagrees with the one that built it.
+    const t = field.sampleTriangle(P.px[i], P.pz[i]);
+    for (const idx of [t.i0, t.i1, t.i2]) if (top[idx] < hi) top[idx] = hi;
+    if (r <= field.s * 0.5) {
+      for (const idx of [t.i0, t.i1, t.i2]) if (bottom[idx] > lo) bottom[idx] = lo;
     } else {
       const cells = field.discCells(P.px[i], P.pz[i], r);
       for (let c = 0; c < cells.length; c += 2) {
         const idx = cells[c];
-        if (top[idx] < hi) top[idx] = hi;
         if (bottom[idx] > lo) bottom[idx] = lo;
       }
     }
@@ -738,22 +773,40 @@ export class ExchangeSolver {
       if (skip && skip[i]) continue;
       const r = radius[i];
       const hi = py[i] + r, lo = py[i] - r;
-      if (r <= s) {
-        const t = field.sampleTriangle(px[i], pz[i]);
-        if (top[t.i0] < hi) top[t.i0] = hi;
-        if (top[t.i1] < hi) top[t.i1] = hi;
-        if (top[t.i2] < hi) top[t.i2] = hi;
+
+      // ⚠ The two extrema take **different footprints**, and giving them one
+      // is a bug in both directions.
+      //
+      // `grainTop` is a *surface estimate*, so it stays on the centre
+      // triangle. A lump's apex spread across its neighbours tells every cell
+      // beside it that the surface is a lump-radius higher than it really is;
+      // grains there then compute a large drop, read as deep, get absorbed,
+      // and terrain rises into whatever is left. Measured, widening this took
+      // penetration from 10,453 µm to 44,310 -- four lumps across. A lump is a
+      // bump *on* the surface, not a raising of it, and the sand beside it is
+      // the surface there.
+      const t = field.sampleTriangle(px[i], pz[i]);
+      if (top[t.i0] < hi) top[t.i0] = hi;
+      if (top[t.i1] < hi) top[t.i1] = hi;
+      if (top[t.i2] < hi) top[t.i2] = hi;
+
+      // `grainBottom` is protection, so it spans the disc the body actually
+      // covers -- the engulfment gate has to know a lump's underside
+      // everywhere the lump sits. On the centre triangle alone, terrain rose
+      // over the rim of a 6 mm lump by 10,453 µm. The threshold is half the
+      // spacing rather than the spacing, because a body with `r == s` is twice
+      // as wide as the triangle and was taking the narrow branch.
+      if (r <= s * 0.5) {
         if (bottom[t.i0] > lo) bottom[t.i0] = lo;
         if (bottom[t.i1] > lo) bottom[t.i1] = lo;
         if (bottom[t.i2] > lo) bottom[t.i2] = lo;
       } else {
-        // Only bodies wider than a cell get here -- at the default size window
-        // that is clumps and nothing else, tens of them against a hundred
-        // thousand grains, so the array this allocates is not in any hot path.
+        // Only bodies wider than half a cell get here -- at the default size
+        // window that is clumps and nothing else, tens of them against a
+        // hundred thousand grains, so this allocation is in no hot path.
         const cells = field.discCells(px[i], pz[i], r);
         for (let c = 0; c < cells.length; c += 2) {
           const idx = cells[c];
-          if (top[idx] < hi) top[idx] = hi;
           if (bottom[idx] > lo) bottom[idx] = lo;
         }
       }
