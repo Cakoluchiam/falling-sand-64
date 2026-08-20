@@ -16,10 +16,28 @@ export const PHASE_FREE = 255;
 
 import { allocBuffer } from './shared.js';
 
+// ⚠ Two stillness counters, and they are not redundant. `restTimer` is the
+// sleep rule's hysteresis and is cleared whenever a grain is woken, including
+// when it is woken by a *neighbour* that moved -- which is deliberate, because
+// the wake rule is contagious on purpose so a creeping flank cannot freeze
+// mid-collapse. `stillTimer` counts how long this grain itself has been slow
+// and supported, and nothing else resets it.
+//
+// Absorption needs the second and cannot use the first. Measured under a
+// continuous pour into a bowl, 3 grains out of 3000 ever reached
+// PHASE_RESTING, because arrivals keep waking the pile -- so gating absorption
+// on the sleep phase makes it a cycle: absorption is what thins the active
+// layer so the solver converges, convergence is what lets grains sleep, and
+// sleep was the gate. Nothing absorbed, ever. The plan orders its mitigations
+// "absorption first, then sleeping", which is right and unreachable through a
+// flag that sleeping owns.
 const F32_FIELDS = [
   'px', 'py', 'pz',
   'vx', 'vy', 'vz',
-  'vol', 'radius', 'colorSeed', 'restTimer',
+  'vol', 'radius', 'colorSeed', 'restTimer', 'stillTimer',
+  // Where the grain was when its stillness count started. Stillness is a
+  // question about displacement, not about speed -- see contact.js.
+  'ax', 'ay', 'az',
 ];
 const U8_FIELDS = ['phase', 'isAgg'];
 

@@ -36,12 +36,21 @@ const SUITES = [
   ['pour', 'pour.mjs', 'pour angle aims, pour spread widens, launch geometry'],
   ['hexfield', 'hexfield.mjs', 'lattice geometry, sampling continuity, volume ledger, relaxation'],
   ['hash', 'hash.mjs', 'contact broad phase: hierarchy, counting sort, exactly-once pairs'],
+  ['measure', 'measure.mjs', 'repose angle and footprint roundness, against surfaces with known answers'],
   // `contact` is split for the same reason as `clumps` below: it grew past a
   // minute and would otherwise set the matrix wall clock on its own.
   ['contact-surface', 'contact.mjs', 'a grain on the terrain: friction angle, sliding, bounce', 'surface'],
   ['contact-pairs', 'contact.mjs', 'grain against grain: separation, weighting, stacks, piles', 'pairs'],
   ['contact-sleep', 'contact.mjs', 'retiring settled grains, and waking them again', 'sleep'],
   ['contact-repose', 'contact.mjs', 'friction holds the pile up, and the footprint is round', 'repose'],
+  // `exchange` is split from the start, for the same reason. Parts are
+  // registered here only once their section exists -- the suite exits non-zero
+  // on a part that runs no checks, so a name added early is red rather than a
+  // job that passes while testing nothing.
+  ['exchange-producers', 'exchange.mjs', 'per-frame passes: grain extrema, contact adjacency, rest timers', 'producers'],
+  ['exchange-burial', 'exchange.mjs', 'how deep a grain is, measured through the pile rather than down a column', 'burial'],
+  ['exchange-absorb', 'exchange.mjs', 'retiring buried grains, the volume audit, and the engulfment invariant', 'absorb'],
+  ['exchange-emit', 'exchange.mjs', 'putting sand back when the active layer runs thin', 'emit'],
   // `clumps` is minutes where the rest are seconds, so it is split into three
   // parts that CI runs as separate jobs. A fourth element is the argument
   // handed to the script; everything else runs whole. The parts share one file

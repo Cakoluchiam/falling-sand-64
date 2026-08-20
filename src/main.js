@@ -8,12 +8,14 @@ import { Particles, PHASE_BALLISTIC } from './particles.js';
 import { Nozzle } from './source.js';
 import { stepBallistic } from './ballistic.js';
 import { ContactSolver } from './contact.js';
+import { ExchangeSolver } from './exchange.js';
 import { HexField, relaxRateFromHalfLife } from './hexfield.js';
 import { initGL, GLUnavailableError, resizeToDisplay } from './gl/context.js';
 import { OrbitCamera } from './gl/camera.js';
 import { GrainRenderer, INSTANCE_FLOATS } from './gl/grains.js';
 import { TerrainRenderer } from './gl/terrain.js';
 import { buildPanel } from './ui.js';
+import { reposeAngle, footprintAnisotropy } from './measure.js';
 
 const DEG = Math.PI / 180;
 
@@ -56,6 +58,7 @@ class App {
     this.renderer = new GrainRenderer(gl, CONFIG.grainCapacity);
     this.terrain = new TerrainRenderer(gl, this.field);
     this.contacts = new ContactSolver(CONFIG.grainCapacity);
+    this.exchange = new ExchangeSolver(CONFIG.grainCapacity);
     this._surf = new Float64Array(4);
 
     this.rng = new Rng(values.seed);
@@ -90,6 +93,14 @@ class App {
     this.frameIndex = 0;
     this.idleSeconds = 0;
     this.curl.builtAt = -Infinity;
+    if (this.exchange) {
+      this.exchange.absorbedCount = 0;
+      this.exchange.absorbedVolume = 0;
+      this.exchange.lastAbsorbed = 0;
+      this.exchange.lastCandidates = 0;
+      this.exchange.emittedCount = 0;
+      this.exchange.emitBlocked = 0;
+    }
   }
 
   // Reserved for the contact solver (M3). The accumulator around it is live now
@@ -109,6 +120,7 @@ class App {
       sleepSpeed: CONFIG.sleepSpeed,
       sleepSubsteps: CONFIG.sleepSubsteps,
       stirSpeed: CONFIG.sleepSpeed * CONFIG.stirFactor,
+      stillFraction: CONFIG.stillFraction,
       // Scaled to the substep, because the overlap a settled contact carries
       // is g*dt^2 and the wake threshold has to sit above it.
       wakeDepth: CONFIG.wakeDepthFactor * values.gravity * h * h,
@@ -233,7 +245,48 @@ class App {
     if (this.accumulator > maxBacklog) this.accumulator = maxBacklog;
     this.lastSubsteps = steps;
 
+    this.runExchange();
     this.frameIndex++;
+  }
+
+  // ⚠ Once per frame, and after the substeps rather than inside them. Burial
+  // is a property of where the pile has settled, so measuring it between
+  // substeps would mostly measure the solver mid-iteration; and the depth pass
+  // is a shortest-path search over the whole active layer, which at eight
+  // substeps a frame would cost eight times what it buys.
+  //
+  // The broad phase is rebuilt here rather than reused from the last substep.
+  // That rebuild ran on *predicted* positions, before the solver corrected
+  // them, so its cells are a projection stale -- harmless for the pair
+  // enumeration it was built for, and not something to hand to a measurement.
+  runExchange() {
+    const P = this.particles;
+    if (P.count === 0) return;
+    const hash = this.contacts.hash;
+    hash.rebuild(P, values.medianDiameter, (i) => P.phase[i] !== PHASE_BALLISTIC);
+    hash.buildAdjacency(P);
+    this.exchange.absorb(P, this.field, hash, {
+      activeLayerMetres: derived.activeLayerMetres(),
+      seedWindow: CONFIG.absorbSeedWindow * values.medianDiameter,
+      quiescenceMode: CONFIG.quiescenceMode,
+      quiescenceSubsteps: Math.ceil(CONFIG.quiescenceSeconds * CONFIG.substepHz),
+      minContacts: CONFIG.minAbsorbContacts,
+      // Float32 height against a surface that is meant to sit flush with the
+      // grains on it: "level with" and "above" are a rounding apart.
+      engulfTolerance: CONFIG.engulfTolerance * values.medianDiameter,
+      maxRise: CONFIG.maxSurfaceRise * values.medianDiameter,
+    });
+    // ⚠ After absorption, not before. Emission reads the active-layer
+    // thickness, and absorption is what changes it -- running first would size
+    // every refill against a layer one frame stale, and on the frame a column
+    // was retired that is exactly the layer emission is meant to notice.
+    this.exchange.emit(P, this.field, {
+      activeLayerMetres: derived.activeLayerMetres(),
+      rng: this.rng,
+      sizeMemory: values.sizeMemory,
+      minGrainVolume: derived.volumeOfDiameter(derived.minGrainDiameter()),
+      maxEmitVolume: derived.volumeOfDiameter(derived.maxEmitDiameter()),
+    });
   }
 
   integrateBallistic(dt) {
@@ -305,6 +358,9 @@ class App {
         f.deposit(dx, dz, height * f.cellArea * f.packingFraction);
       }
     }
+    // Under observed elevation a deposit moves the ledger and not the surface,
+    // so this console tool has to ask for the surface it just paid for.
+    this.exchange.settleElevation(f, { volumeFallback: true });
     return f.volume;
   }
 
@@ -330,6 +386,8 @@ class App {
       (grainVol + field.volume + field.escapedVolume + this.lostVolume + this.eatenVolume);
     const rel = emitted > 0 ? Math.abs(residual) / emitted : 0;
     const grams = emitted * SAND_PARTICLE_DENSITY * 1000;
+    const ex = this.exchange;
+    const div = ex.elevationDivergence(field);
 
     const lines = [
       `${fps.toFixed(0)} fps   ${avg.toFixed(1)} ms   sim ${values.simSpeed.toFixed(2)}x` +
@@ -346,6 +404,14 @@ class App {
         `   buried ${(field.volume * SAND_PARTICLE_DENSITY * 1000).toFixed(1)} g` +
         `   into lumps ${(this.eatenVolume * SAND_PARTICLE_DENSITY * 1000).toFixed(1)} g` +
         (values.relaxation ? '   SLUMPING' : ''),
+      // Absorption's own line. `candidates` against `absorbed` is the
+      // diagnostic that separates the two ways this stalls: no candidates
+      // means the quiescence test is starving, candidates without absorptions
+      // means nothing is reaching the active-layer depth.
+      `absorbed ${ex.absorbedCount}   this frame ${ex.lastAbsorbed}/${ex.lastCandidates}` +
+        `   woke ${ex.lastWoken}   emitted ${ex.emittedCount}` +
+        `   phi ${div.phi.toFixed(3)}   elev drift ${(div.worst * 1e6).toFixed(0)} um` +
+        (Number.isFinite(derived.activeLayerMetres()) ? '' : '   PURE DEM'),
       `volume audit ${residual.toExponential(2)}  (${(rel * 100).toFixed(4)}%)`,
     ];
     if (values.autoRestart && this.idleSeconds > 0) {
@@ -423,9 +489,30 @@ function main() {
     return;
   }
 
+  // ⚠ The measured repose angle, beside the dialed one. This is the half of
+  // the Pile group that could not exist until grains decided the slope: the
+  // slider says what the comparison arm would slump to, and this says what
+  // friction actually produced. They are deliberately different numbers, and
+  // the whole project is about the relationship between them.
+  //
+  // Reported as "not enough pile" rather than as a number until the fit has
+  // samples behind it -- an angle from three radial bins is noise wearing a
+  // unit, and this panel is the only instrument the project has.
   const sync = buildPanel(document.getElementById('panel'), SCHEMA, values, () => {
     enforceConstraints();
     sync();
+  }, () => {
+    const m = reposeAngle(app.field);
+    if (!Number.isFinite(m.angle)) {
+      return [`measured angle  not enough pile yet (${m.samples} bins)`];
+    }
+    const a = footprintAnisotropy(app.field);
+    return [
+      `measured angle  ${m.angle.toFixed(1)}° over ${m.samples} bins,` +
+        ` peak ${(m.peak * 1000).toFixed(1)} mm`,
+      `footprint  ${Number.isFinite(a.spread) ? `${(a.spread * 100).toFixed(1)}% spread,` +
+        ` ${(a.sixfold * 100).toFixed(1)}% six-fold` : 'incomplete'}`,
+    ];
   });
 
   window.addEventListener('keydown', (e) => {

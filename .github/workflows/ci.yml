@@ -42,8 +42,8 @@ jobs:
         # which it only does unprompted from 22.7. test/run.mjs refuses to
         # start below that rather than failing incomprehensibly.
         node: ['22', '24']
-        # ⚠ Longest first, and this now matters. 13 suites x 2 versions is 26
-        # jobs against a 20-job *account* ceiling, so six of them queue behind
+        # ⚠ Longest first, and this now matters. 18 suites x 2 versions is 36
+        # jobs against a 20-job *account* ceiling, so sixteen queue behind
         # the rest rather than all starting at once. Under contention the
         # makespan is minimised by dispatching the long jobs first, and matrix
         # order is what decides dispatch order -- put a two-second suite at the
@@ -52,12 +52,21 @@ jobs:
         # tightens this without anything here changing.
         #
         # Ordered by measured local runtime, longest first:
-        #   clumps-spread 101s   clumps-rate 87s   contact-pairs 47s
-        #   clumps-stream 47s    contact-repose 45s   hexfield 14s
-        #   contact-sleep 10s    everything else under a second
-        suite: [clumps-spread, clumps-rate, contact-pairs, clumps-stream,
-                contact-repose, hexfield, contact-sleep,
-                pour, modules, sizes, smoke, hash, contact-surface]
+        #   exchange-absorb 534s   clumps-spread 103s   clumps-rate 88s
+        #   contact-pairs 47s   clumps-stream 47s   contact-repose 45s
+        #   exchange-producers 15s   hexfield 14s   contact-sleep 10s
+        #   everything else under a second
+        #
+        # `exchange-absorb` sets the makespan on its own and has grown to nine
+        # minutes: it pours nine thousand grains three times over -- with
+        # absorption, without it, and again with lumps in the stream -- because
+        # each comparison is the check. Splitting it further would mean pouring
+        # more often rather than for less time, so the cost is the fixture and
+        # not the packaging.
+        suite: [exchange-absorb, clumps-spread, clumps-rate, contact-pairs,
+                clumps-stream, contact-repose, exchange-producers, hexfield,
+                contact-sleep, pour, modules, sizes, smoke, hash,
+                contact-surface, exchange-burial, exchange-emit, measure]
     name: ${{ matrix.suite }} (node ${{ matrix.node }})
     steps:
       - uses: actions/checkout@v4

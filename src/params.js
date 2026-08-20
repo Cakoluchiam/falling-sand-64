@@ -37,6 +37,23 @@ export const CONFIG = {
 
   grainCapacity: 200000,
 
+  // ⚠ 240, and M4 measured the case for raising it and then measured it away.
+  // The plan defers this decision until absorption bounds the population; the
+  // reordering was right, and the first answer it gave was wrong.
+  //
+  // A bowl fixture said 960 Hz decisively -- penetration 1225 um to 203, a
+  // lumpy buried surface to a flat one. That fixture held the population fixed
+  // and so hid a confound in the stillness test, which was then scaled by
+  // `g*dt^2` and therefore tightened as 1/hz^2 while the pile's actual motion
+  // did not. Raising the rate was mostly switching absorption off.
+  //
+  // With stillness made rate-independent, the same twenty-second pour at
+  // matched *simulated* time says the opposite: at t=4 s, 240 Hz has absorbed
+  // 6,229 grains against 480 Hz's 5,284, with penetration 297 um against 303,
+  // for half the cost per frame -- 237 ms against 474. The exchange does not
+  // need the rate, and the `g*dt^2 << r` criterion the plan states is about
+  // contact accuracy -- stack compression and tunnelling -- which remains true
+  // and remains a separate decision with its own budget.
   substepHz: 240,
   maxSubstepsPerFrame: 8,
   frameBudgetMs: 12,
@@ -88,6 +105,51 @@ export const CONFIG = {
   sleepSubsteps: 12,
   wakeDepthFactor: 0.2,
   stirFactor: 10,
+
+  // Exchange (M4). How far below the grain-top surface a grain may be and
+  // still have its depth measured directly rather than propagated through
+  // contacts. It has to cover the surface's own rise across one cell,
+  // `cellSpacing * tan(slope)`, which at 3 mm spacing and 1 mm grains is three
+  // diameters at 45 degrees -- below that, grains on the low side of a cell
+  // are never seeded and read as buried while sitting in plain sight (25.7% of
+  // them at 32 degrees with a two-diameter window, 89.1% at 45). Six is well
+  // clear of any angle sand stands at, and because a seed's depth is measured
+  // rather than assumed the setting does not otherwise change the answer:
+  // four, six and eight give identical results.
+  absorbSeedWindow: 6,
+  // ⚠ How long a grain must hold still before absorption will take it, in
+  // **seconds** rather than substeps. Counting substeps makes the requirement
+  // four times stricter at 960 Hz than at 240 for no physical reason, which is
+  // half of what made the rate comparison read backwards.
+  quiescenceSeconds: 0.1,
+  // How far a grain may drift over that time and still count as standing
+  // still, as a fraction of its own radius. ⚠ Not a multiple of `g*dt^2`: see
+  // the note in contact.js for why that scaling switched the exchange off as
+  // the substep rate rose.
+  stillFraction: 0.5,
+  // 'and' | 'or' | 'self' | 'contact'. Which stillness test absorption uses.
+  // ⚠ Settled by measurement, which is open concern 2 in PLAN.md discharged.
+  // The plan predicts contact-quiescence may starve under a continuous pour,
+  // and it does -- and `and` inherits that, because requiring every neighbour
+  // to be still is a condition a pour rarely leaves standing. Over a
+  // twenty-second pour onto a flat floor: `self` at a 0.5-radius stillness bar
+  // absorbed 16,629 grains, `contact` at twice that looseness 8,288, and `and`
+  // 4,696. `self` alone is not the risk the plan feared either -- the buried
+  // flank angle moves 0.7 degrees between a 0.5r bar and a 1.0r bar, so
+  // absorption is not freezing material mid-slide.
+  quiescenceMode: 'self',
+  // Contact-count floor for the absorption prefilter. Monotone in burial, as
+  // a prefilter must be: a grain with two contacts is on a surface whatever
+  // else is true of it.
+  minAbsorbContacts: 3,
+  // Slack on the engulfment gate, in grain diameters. The surface is meant to
+  // sit flush with the undersides resting on it, so without a tolerance the
+  // comparison is decided by Float32 rounding.
+  engulfTolerance: 0.05,
+  // Ceiling on how far one absorption pass may raise a cell's surface, in
+  // grain diameters. Bounds how deep an arriving grain can find itself when
+  // the terrain climbed under it between frames.
+  maxSurfaceRise: 0.1,
 
   // Turbulence lookup grid. Node budget rather than a fixed per-axis count, so
   // the cells stay roughly cubic as the field's aspect ratio changes with pour
@@ -345,6 +407,16 @@ export const derived = {
   minGrainDiameter() {
     return values.minGrainRatio * values.medianDiameter;
   },
+  volumeOfDiameter(d) {
+    return (Math.PI / 6) * d * d * d;
+  },
+  // Largest grain emission may re-expose. ⚠ Clamped below the clump threshold,
+  // not merely below the grain size cap: a cell that buried clumps would
+  // otherwise pop a boulder out of a smooth surface. The accepted cost is that
+  // such a cell re-exposes as coarse sand -- see open concern 1.
+  maxEmitDiameter() {
+    return Math.min(derived.maxDiameter(), derived.minClumpDiameter());
+  },
   // Rough width of the stream where it lands, ignoring drag and turbulence.
   // Enough to answer "is a clump a big fraction of the stream or a small one",
   // which is the question the pour angle exists to change.
@@ -585,14 +657,12 @@ export const SCHEMA = [
   {
     key: 'friction', group: 'Pile', label: 'Grain friction',
     units: [{ unit: '', scale: 1 }], min: 0.05, max: 1.5, log: true, logZero: true,
-    pending: true,
-    help: 'How strongly two grains resist sliding past each other, as a Coulomb ratio: the sideways force a contact can carry before it slips, divided by the force pressing the grains together. Quartz sand on quartz sand is about 0.5. This is the input the whole project turns on — the pile\'s repose angle is a result of it rather than a setting, and how the two relate is the thing being measured, so they are deliberately not the same number. Zero is reachable and worth trying: frictionless grains should spread into a puddle rather than a pile.' + SOON,
+    help: 'How strongly two grains resist sliding past each other, as a Coulomb ratio: the sideways force a contact can carry before it slips, divided by the force pressing the grains together. Quartz sand on quartz sand is about 0.5. This is the input the whole project turns on — the pile\'s repose angle is a result of it rather than a setting, and how the two relate is the thing being measured, so they are deliberately not the same number. Zero is reachable and worth trying: frictionless grains should spread into a puddle rather than a pile.',
   },
   {
     key: 'restitution', group: 'Pile', label: 'Bounciness',
     units: [{ unit: '', scale: 1 }], min: 0, max: 0.9,
-    pending: true,
-    help: 'How much of an impact a grain keeps: 0 stops it dead, 1 would send it back up at the speed it arrived. Sand is low, around 0.1 to 0.3, but not zero — this is what produces the splash of grains scattering outward where the stream meets the pile. Pour spread cannot stand in for it, because that widens the stream in the air rather than at the point of impact.' + SOON,
+    help: 'How much of an impact a grain keeps: 0 stops it dead, 1 would send it back up at the speed it arrived. Sand is low, around 0.1 to 0.3, but not zero — this is what produces the splash of grains scattering outward where the stream meets the pile. Pour spread cannot stand in for it, because that widens the stream in the air rather than at the point of impact.',
   },
   {
     key: 'relaxation', group: 'Pile', label: 'Slump the surface (comparison arm)', type: 'bool',
@@ -618,12 +688,11 @@ export const SCHEMA = [
     key: 'activeLayerDepth', group: 'Exchange', label: 'Active layer',
     units: [{ unit: ' grains', scale: 1 }], min: 0.2, max: 20, log: true,
     logZero: true, logInf: true,
-    pending: true,
-    help: 'How deep the layer of individually simulated grains goes, counted in grain diameters. Anything buried deeper is absorbed into the pile surface to keep the grain budget bounded. Both ends of this slider are special: 0 absorbs a grain as soon as it is covered, and ∞ never absorbs anything, which is pure DEM — every grain simulated forever. That end is the reference run for checking that absorption is not changing the pile shape, and it is a diagnostic rather than a usable setting, since the grain budget fills in seconds. Note the depth is a multiple of grain size while a pile is not, so no finite setting here means "never absorb" — only the ∞ detent does.' + SOON,
+    help: 'How deep the layer of individually simulated grains goes, counted in grain diameters. Anything buried deeper is absorbed into the pile surface to keep the grain budget bounded. Both ends of this slider are special: 0 absorbs a grain as soon as it is covered, and ∞ never absorbs anything, which is pure DEM — every grain simulated forever. That end is the reference run for checking that absorption is not changing the pile shape, and it is a diagnostic rather than a usable setting, since the grain budget fills in seconds. Note the depth is a multiple of grain size while a pile is not, so no finite setting here means "never absorb" — only the ∞ detent does.',
   },
   {
-    key: 'sizeMemory', group: 'Exchange', label: 'Size memory', type: 'bool', pending: true,
-    help: 'Remember which grain sizes were buried where, so a disturbed pile re-exposes the sizes that were actually there instead of average ones.' + SOON,
+    key: 'sizeMemory', group: 'Exchange', label: 'Size memory', type: 'bool',
+    help: 'Remember which grain sizes were buried where, so a disturbed pile re-exposes the sizes that were actually there instead of average ones. Note a cell that buried clumps re-exposes as coarse sand rather than as clumps — emitted sizes are capped below the clump threshold so a boulder cannot appear out of a smooth surface.',
   },
   {
     key: 'packingFraction', group: 'Exchange', label: 'Packing fraction',

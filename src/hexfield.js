@@ -92,6 +92,12 @@ export class HexField {
     // grains and this is the fallback for cells that have none.
     this.packingFraction = 0.62;
 
+    // ⚠ Off, and it stays off: M4 measured observation-driven elevation and
+    // took the plan's pre-approved retreat. The flag survives because the
+    // measurement that justified the retreat has to stay reproducible -- see
+    // the note at the top of exchange.js for the four rules and their numbers.
+    this.observedElevation = false;
+
     // Running total, so the audit does not sweep 37k cells every frame.
     // `sumVolume()` recomputes it from scratch, and the tests check they agree.
     this.volume = 0;
@@ -245,12 +251,22 @@ export class HexField {
 
   // --- Mass ---------------------------------------------------------------
 
-  // Height follows volume for now. At M4 this becomes the observed underside of
-  // the resting grains in the cell, with this as the fallback where there are
-  // none -- and with both computed in parallel, because their divergence is the
-  // measurement of whether a single packing fraction was ever the right model.
+  // ⚠ Height follows volume only while `observedElevation` is off. With it on
+  // -- which is what M4's absorption runs under -- a deposit changes the
+  // *ledger* and nothing else, and the surface is driven separately from the
+  // observed undersides of the grains that remain.
+  //
+  // Leaving this coupled was a real bug and not a tidiness point: absorption
+  // then raised the terrain twice, once by `volume / (area * phi)` and again to
+  // the observed surface, and the volume-derived half does not know where the
+  // grains are. Measured, it drove live grains up to 782 µm inside the terrain
+  // in a confined pour -- more than a grain diameter -- which is exactly the
+  // engulfment the invariant forbids, arriving through the one path that never
+  // consults `grainBottom`.
   _syncHeight(c) {
-    this.height[c] = this.solidVolume[c] / (this.cellArea * this.packingFraction);
+    if (!this.observedElevation) {
+      this.height[c] = this.solidVolume[c] / (this.cellArea * this.packingFraction);
+    }
     this._markDirty(c);
   }
 
@@ -258,6 +274,13 @@ export class HexField {
   // observed one without a second array shadowing this one.
   volumeHeightOf(c) {
     return this.solidVolume[c] / (this.cellArea * this.packingFraction);
+  }
+
+  // The height this cell *would* reach if `extra` more solid volume landed in
+  // it. M4's engulfment gate asks this before depositing, which is the only
+  // way to refuse an absorption that would lift the surface over a live grain.
+  volumeHeightOf2(c, extra) {
+    return (this.solidVolume[c] + extra) / (this.cellArea * this.packingFraction);
   }
 
   _addTo(c, w, volume, logV) {
@@ -288,7 +311,7 @@ export class HexField {
       this._addTo(t.i1, t.w1, volume, logV);
       this._addTo(t.i2, t.w2, volume, logV);
     } else {
-      const cells = this._disc(x, z, splatRadius);
+      const cells = this.discCells(x, z, splatRadius);
       for (let k = 0; k < cells.length; k += 2) {
         this._addTo(cells[k], cells[k + 1], volume, logV);
       }
@@ -326,7 +349,7 @@ export class HexField {
       removed += this._takeFrom(t.i1, volume * t.w1);
       removed += this._takeFrom(t.i2, volume * t.w2);
     } else {
-      const cells = this._disc(x, z, splatRadius);
+      const cells = this.discCells(x, z, splatRadius);
       for (let k = 0; k < cells.length; k += 2) {
         removed += this._takeFrom(cells[k], volume * cells[k + 1]);
       }
@@ -339,7 +362,13 @@ export class HexField {
   // summing to 1. Cells off the edge are simply not enumerated and the
   // remaining weights absorb their share, which keeps deposition exact at the
   // boundary. Falls back to the triangle when the disc catches no centre.
-  _disc(x, z, radius) {
+  //
+  // Public because M4's extrema pass needs the *same* set of cells a deposit
+  // spreads over, weights ignored: a grain must register its underside across
+  // every cell its volume would land in, or the engulfment guard has a hole
+  // exactly under the rim of the large grains it was written for. Two
+  // enumerations that agree on paper are how the one-resolution rule rots.
+  discCells(x, z, radius) {
     const out = [];
     const s = this.s, rowH = s * SQRT3_2;
     const r0 = Math.max(0, Math.ceil((z - radius - this.originZ) / rowH));
